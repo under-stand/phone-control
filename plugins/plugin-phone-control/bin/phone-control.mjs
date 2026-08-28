@@ -57,7 +57,7 @@ function applyEnvironment(flags, command) {
 }
 
 function printHelp() {
-  process.stdout.write(`Phone Control 0.7.0\n\n`);
+  process.stdout.write(`Phone Control 0.7.1\n\n`);
   process.stdout.write(`Usage:\n`);
   process.stdout.write(`  phone-control start [--host HOST] [--port PORT] [--public-url URL]\n`);
   process.stdout.write(`  phone-control pair [--url URL] [--no-qr]\n`);

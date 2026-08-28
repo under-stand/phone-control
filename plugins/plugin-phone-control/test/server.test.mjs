@@ -325,13 +325,13 @@ export const tests = [
         const page = await request({ port: started.port, pathname: "/" });
         assert.equal(page.status, 200);
         assert.match(page.headers["content-security-policy"], /default-src 'self'/);
-        assert.match(page.body, /app\.js\?v=54/);
+        assert.match(page.body, /app\.js\?v=55/);
         assert.match(page.body, /id="task-title">任务</);
         assert.doesNotMatch(page.body, /id="metrics"|任务概览|会话列表/);
 
         const compressedAsset = await request({
           port: started.port,
-          pathname: "/app.js?v=54",
+          pathname: "/app.js?v=55",
           headers: { "accept-encoding": "gzip" },
         });
         assert.equal(compressedAsset.status, 200);
@@ -826,7 +826,7 @@ export const tests = [
         assert.equal(detail.body.session.control.canAnswer, true);
         const status = await request({ port: started.port, pathname: "/api/status", headers: { cookie } });
         assert.equal(status.status, 200);
-        assert.equal(status.body.version, "0.7.0");
+        assert.equal(status.body.version, "0.7.1");
         assert.equal(status.body.codexHome, undefined);
         assert.equal(status.body.device, undefined);
         assert.equal(status.body.appServer.threadStates, undefined);

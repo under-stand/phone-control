@@ -231,6 +231,7 @@ try {
   assert.deepEqual(runtime.devices.counts(), { active: 0, revoked: 20, total: 20 }, "revoked device history must stay bounded before it reaches the mobile UI");
   runtime.store.ingest(event("thread-active", 68, "user_prompt", { source: "rollout", turnId: null, message: { role: "user", text: "<recommended_plugins>\n- GitHub\n</recommended_plugins><environment_context>\n  <cwd>/workspace/phone-control</cwd>\n</environment_context>" } }));
   runtime.store.ingest(event("thread-active", 69, "turn_start", { source: "rollout", turnId: "turn-thread-active" }));
+  runtime.store.ingest(event("thread-active", 64, "user_prompt", { source: "phone-control", turnId: "turn-thread-active", message: { role: "user", text: "把手机端会话体验继续打磨，并检查图片发送。" } }));
   runtime.store.ingest(event("thread-active", 70, "user_prompt", { source: "hook", turnId: "turn-thread-active", message: { role: "user", text: "把手机端会话体验继续打磨，并检查图片发送。" } }));
   runtime.store.ingest(event("thread-active", 71, "user_prompt", { source: "rollout", turnId: null, message: { role: "user", text: "把手机端会话体验继续打磨，并检查图片发送。" } }));
   runtime.store.ingest(event("thread-active", 71.5, "assistant_message", { source: "rollout", turnId: "turn-thread-active", message: { role: "assistant", text: Array.from({ length: 14 }, (_, index) => `过程回复第 ${index + 1} 行：展开后必须完整显示这一整行，不能在字形中部裁断。`).join("\n") } }));
@@ -561,7 +562,7 @@ https://inside-fence.example
   assert.equal(await page.evaluate(() => window.__phoneControlCopiedText), finalAssistantReply, "copy must preserve the complete original Markdown reply");
   assert.equal(await copyButtons.last().innerText(), "已复制", "the copy action should acknowledge success in place");
   assert.equal(await page.locator("#detail[open] .conversation-turn").count(), 1, "Hook and rollout copies of one prompt must stay in one conversation turn");
-  assert.equal(await page.locator("#detail[open] .conversation-turn .turn-user").count(), 1, "the duplicate cross-source prompt must render once");
+  assert.equal(await page.locator("#detail[open] .conversation-turn .turn-user").count(), 1, "a delayed phone, Hook, and rollout copy of one prompt must render once");
   await page.locator("#detail[open] .turn-updates summary").click();
   const expandedProcessReply = page.locator("#detail[open] .turn-updates .timeline-rich").first();
   const processReplySize = await expandedProcessReply.evaluate((element) => ({ clientHeight: element.clientHeight, scrollHeight: element.scrollHeight }));

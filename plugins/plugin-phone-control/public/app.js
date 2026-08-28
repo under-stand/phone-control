@@ -8,7 +8,8 @@ import {
   relativeTime,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=54";
+} from "./lib/format.js?v=55";
+import { conversationTurns } from "./lib/conversation.js?v=55";
 
 function storedCompletionKeys() {
   try {
@@ -1691,76 +1692,6 @@ function timelineItem(event) {
     <span></span>
     <div><b>${escapeHtml(event.title)}</b>${timelineMessage(event)}<small>${relativeTime(event.at)}</small></div>
   </li>`;
-}
-
-function conversationTurns(events = []) {
-  const ordered = [...events].sort((left, right) => {
-    const delta = new Date(left.at).getTime() - new Date(right.at).getTime();
-    return Number.isFinite(delta) ? delta : 0;
-  });
-  const turns = [];
-  const byId = new Map();
-  let current = null;
-  let fallback = 0;
-  const messageFingerprint = (value) => String(value || "").replace(/\s+/g, " ").trim();
-  const eventTime = (event) => new Date(event?.at || event?.updatedAt).getTime();
-  const eventOrigin = (event) => event?.origin || event?.source || "unknown";
-  const turnClosed = (turn) => turn?.events.some((event) => ["turn_complete", "session_end", "error", "aborted"].includes(event.kind));
-  const addMessage = (messages, event) => {
-    const text = event.message?.text ? String(event.message.text).trim() : "";
-    if (!text) return;
-    const previous = messages.at(-1);
-    const duplicate = previous
-      && messageFingerprint(previous.message) === messageFingerprint(text)
-      && previous.origin !== eventOrigin(event)
-      && Math.abs(eventTime(previous) - eventTime(event)) <= 5_000;
-    if (duplicate) return;
-    messages.push({
-      id: event.eventId || `${event.kind}-${event.at}`,
-      kind: event.kind,
-      at: event.at,
-      message: text,
-      origin: eventOrigin(event),
-    });
-  };
-  for (const event of ordered) {
-    let key = event.turnId ? String(event.turnId) : null;
-    if (!key && event.kind === "user_prompt") {
-      const text = messageFingerprint(event.message?.text);
-      const matching = text ? [...turns].reverse().find((turn) => turn.userMessages.some((message) => (
-        messageFingerprint(message.message) === text
-        && message.origin !== eventOrigin(event)
-        && Math.abs(eventTime(message) - eventTime(event)) <= 5_000
-      ))) : null;
-      if (matching) key = matching.id;
-      else if (current && !turnClosed(current) && Math.abs(eventTime(current) - eventTime(event)) <= 60_000) key = current.id;
-      else {
-        fallback += 1;
-        key = `prompt-${event.eventId || fallback}`;
-      }
-    }
-    if (!key) {
-      fallback += 1;
-      key = current?.id || `activity-${fallback}`;
-    }
-    let turn = byId.get(key);
-    if (!turn) {
-      turn = { id: key, at: event.at, updatedAt: event.at, model: null, reasoningEffort: null, serviceTier: null, events: [], userMessages: [], assistantMessages: [] };
-      byId.set(key, turn);
-      turns.push(turn);
-    }
-    current = turn;
-    turn.events.push(event);
-    turn.model = event.model || turn.model;
-    turn.reasoningEffort = event.reasoningEffort || turn.reasoningEffort;
-    turn.serviceTier = event.serviceTier || turn.serviceTier;
-    turn.updatedAt = event.at || turn.updatedAt;
-    if (event.kind === "user_prompt") addMessage(turn.userMessages, event);
-    if (event.kind === "assistant_message") addMessage(turn.assistantMessages, event);
-  }
-  return turns
-    .filter((turn) => turn.userMessages.length || turn.assistantMessages.length)
-    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
 }
 
 function conversationTurnStatus(turn) {
