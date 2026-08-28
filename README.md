@@ -5,7 +5,23 @@ Phone Control 是一个本地优先的 Codex 手机控制面板。它把桌面�
 
 服务与数据保留在自己的电脑上；手机通过 Tailscale、可信局域网或自建 VPS HTTPS Relay 访问。
 
-## 安装
+## Windows 一键安装
+
+在 Windows PowerShell 中粘贴一行：
+
+```powershell
+irm https://raw.githubusercontent.com/under-stand/phone-control/main/plugins/plugin-phone-control/install-windows.ps1 | iex
+```
+
+安装器会检查 Git、Node.js 22+ 和 Codex，安装插件与依赖，创建当前用户的自恢复后台任务，并在
+Tailscale 已登录时尝试生成私有手机入口。也可以下载仓库 ZIP，解压后双击
+`plugins\plugin-phone-control\install-windows.cmd`。
+
+原生 Windows 当前支持任务追踪、Hooks、通知和仪表盘。续聊、新建和中止依赖 Codex App Server
+控制 socket，暂时需要把 Codex 与 Phone Control 安装在同一个 WSL2 发行版中。详情见
+[完整使用说明](plugins/plugin-phone-control/README.md)。
+
+## Linux、macOS 与 WSL2
 
 需要 Node.js 22+、已登录且支持 `codex plugin` 的 Codex，以及 Git：
 

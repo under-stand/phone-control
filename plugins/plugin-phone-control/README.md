@@ -29,7 +29,35 @@ Phone Control · 127.0.0.1:8787
 
 ## 快速开始
 
-### 1. 准备环境
+### Windows 一键安装（推荐）
+
+在 Windows PowerShell 中粘贴下面一行：
+
+```powershell
+irm https://raw.githubusercontent.com/under-stand/phone-control/main/plugins/plugin-phone-control/install-windows.ps1 | iex
+```
+
+安装器会自动检查或安装 Git、Node.js 22+ 和支持插件的 Codex CLI，然后下载 Phone Control、注册
+插件、安装后台计划任务并检查服务。若电脑已经登录 Tailscale，它还会尝试配置 `tailscale serve`
+并直接打印十分钟有效的一次性手机配对链接。安装依赖时 Windows 可能显示系统确认窗口；Phone
+Control 后台任务本身以当前用户权限运行，不要求管理员权限。
+
+如果不想粘贴命令，也可以下载仓库 ZIP，解压后双击
+`plugins\plugin-phone-control\install-windows.cmd`。只在电脑本机安装、不配置 Tailscale：
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/under-stand/phone-control/main/plugins/plugin-phone-control/install-windows.ps1))) -Access Local
+```
+
+安装完成后完全退出并重新打开 Codex，新建一个 thread，在 `/hooks` 中检查并信任当前 Hooks。
+
+原生 Windows 当前可以追踪 Desktop/CLI 历史、显示实时 Hook 状态、通知和手机仪表盘。由于 Codex
+原生 Windows App Server 尚未开放 Phone Control 使用的本地控制 socket，续聊、新建和中止等实时
+控制暂时需要把 Codex 与 Phone Control 都安装在同一个 WSL2 发行版中；安装器会在结束时再次提示。
+
+### Linux、macOS 与 WSL2 手动安装
+
+#### 1. 准备环境
 
 需要：
 
@@ -46,11 +74,10 @@ codex --version
 codex plugin --help
 ```
 
-当前以 Linux + Node.js 22 为主要验证环境。Linux 可使用 systemd user service；没有 systemd
-的 Linux、macOS 和 WSL 会回退到 tmux + `@reboot` crontab。原生 Windows 尚未验证，建议先在
-WSL 中使用。
+Linux 可使用 systemd user service；没有 systemd 的 Linux、macOS 和 WSL 会回退到 tmux +
+`@reboot` crontab。原生 Windows 使用当前用户的计划任务，并在进程退出后自动恢复。
 
-### 2. 安装项目与插件
+#### 2. 安装项目与插件
 
 从公开仓库注册 `phone-control` marketplace，再安装插件：
 
@@ -71,7 +98,7 @@ npm run verify
 安装或更新插件后，新建一个 Codex thread，并在 `/hooks` 中检查、信任当前 Hook 哈希。
 已经长期运行的 Codex Desktop、IDE 或 App Server 也应重启一次，避免继续加载旧缓存目录。
 
-### 3. 安装后台服务
+#### 3. 安装后台服务
 
 ```bash
 node ./bin/phone-control.mjs doctor
@@ -84,11 +111,11 @@ node ./bin/phone-control.mjs service status
 
 `service install` 会固定当前 Node 和插件路径。升级 Node 或移动项目后，需要重新执行一次该命令。
 
-### 4. 让手机访问
+#### 4. 让手机访问
 
 选择一种接入方式即可。
 
-#### VPS Relay：无需手机 VPN
+##### VPS Relay：无需手机 VPN
 
 已经配置过 Relay 的机器只需检查状态并生成配对链接：
 
@@ -101,7 +128,7 @@ node ./bin/phone-control.mjs pair --no-qr
 从零部署 VPS、配置 FRP、HTTPS 证书和回滚入口，见
 [VPS Relay 指南](docs/vps-relay.md)。Relay 默认先进入 standby，只有所有诊断通过后才能激活。
 
-#### Tailscale：仅 tailnet 可见
+##### Tailscale：仅 tailnet 可见
 
 ```bash
 tailscale serve --bg 8787
@@ -113,7 +140,7 @@ node ./bin/phone-control.mjs service restart
 node ./bin/phone-control.mjs pair --no-qr
 ```
 
-#### 可信局域网：临时调试
+##### 可信局域网：临时调试
 
 ```bash
 node ./bin/phone-control.mjs start --host 0.0.0.0
@@ -128,7 +155,7 @@ HTTPS 安全上下文。
 | Tailscale | 是 | 私有访问、无需自建服务器 |
 | VPS Relay | 否 | 与其他 VPN 共存、普通 HTTPS 访问 |
 
-### 5. 完成手机配对
+#### 5. 完成手机配对
 
 `pair` 会生成一个十分钟有效、只能使用一次的 URL。用手机打开后，服务端会签发该设备独有的
 HttpOnly Cookie，并立即从地址栏移除配对码。
@@ -228,6 +255,7 @@ node ./bin/phone-control.mjs service install --runtime "$(command -v node)"
 | 手机打不开页面 | 运行 `relay doctor` 或检查 `tailscale serve status` |
 | 页面一直只读 | 运行 `doctor`，确认 Managed App Server socket 已找到 |
 | Hook 显示失败 | 更新插件后重启 Codex，并在 `/hooks` 重新检查当前哈希 |
+| Windows 安装后只能查看 | 原生 App Server 暂无控制 socket；需完整控制时在同一 WSL2 发行版中运行 Codex 与 Phone Control |
 | 后台回来后显示断线 | 点击顶栏连接状态立即探测；页面会同时重建 SSE |
 | 收不到系统通知 | 确认使用 HTTPS，并以“开启提醒”时的测试通知为准 |
 | 新版本没有生效 | 重新执行 `codex plugin add`、`service install`，然后新建 thread |

@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { buildSystemdUnit, buildTmuxLauncher, parseServiceMetadata } from "../src/service-manager.mjs";
+import {
+  buildSystemdUnit,
+  buildTmuxLauncher,
+  buildWindowsLauncher,
+  buildWindowsTaskAction,
+  buildWindowsTaskRegistration,
+  parseServiceMetadata,
+} from "../src/service-manager.mjs";
 import { findTmuxSessionId } from "../src/tmux-utils.mjs";
 import { expectedStablePluginRoot, nodeRuntimeStatus, serviceDefinitionStatus } from "../src/service-diagnostics.mjs";
 
@@ -27,7 +34,7 @@ export const tests = [
   {
     name: "builds service definitions with explicit runtime and stable plugin metadata",
     async run() {
-      for (const definition of [buildSystemdUnit(options), buildTmuxLauncher(options)]) {
+      for (const definition of [buildSystemdUnit(options), buildTmuxLauncher(options), buildWindowsLauncher(options)]) {
         assert.deepEqual(parseServiceMetadata(definition), {
           runtime: options.runtime,
           entry: "/opt/phone control/bin/phone-control.mjs",
@@ -35,6 +42,34 @@ export const tests = [
         assert.match(definition, /127\.0\.0\.1/);
         assert.match(definition, /8787/);
       }
+    },
+  },
+  {
+    name: "builds a user-level Windows launcher with restart and log rotation",
+    async run() {
+      const windows = {
+        root: "C:\\Users\\Me\\Phone Control\\repo",
+        dataDir: "C:\\Users\\Me\\.phone-control",
+        host: "127.0.0.1",
+        port: 8787,
+        runtime: "C:\\Program Files\\nodejs\\node.exe",
+      };
+      const launcher = buildWindowsLauncher(windows);
+      assert.deepEqual(parseServiceMetadata(launcher), {
+        runtime: windows.runtime,
+        entry: "C:\\Users\\Me\\Phone Control\\repo/bin/phone-control.mjs",
+      });
+      assert.match(launcher, /while \(\$true\)/);
+      assert.match(launcher, /4194304/);
+      assert.match(launcher, /Start-Sleep -Seconds 2/);
+      assert.equal(
+        buildWindowsTaskAction("C:\\Users\\Me\\.phone-control\\run-service.ps1"),
+        'powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\\Users\\Me\\.phone-control\\run-service.ps1"',
+      );
+      const registration = buildWindowsTaskRegistration("C:\\Users\\Me\\.phone-control\\run-service.ps1");
+      assert.match(registration, /New-ScheduledTaskTrigger -AtLogOn/);
+      assert.match(registration, /ExecutionTimeLimit \(\[TimeSpan\]::Zero\)/);
+      assert.match(registration, /RunLevel Limited/);
     },
   },
   {

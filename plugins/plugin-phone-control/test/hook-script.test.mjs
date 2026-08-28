@@ -43,10 +43,14 @@ export const tests = [
       assert.ok(passiveHandlers.length > 0);
       assert.equal(passiveHandlers.some((handler) => Object.hasOwn(handler, "async")), false);
       assert.equal(passiveHandlers.every((handler) => handler.command.includes("${PLUGIN_DATA}/hook-runtime/scripts/hook.mjs")), true);
+      assert.equal(passiveHandlers.every((handler) => handler.commandWindows?.includes("$env:PLUGIN_DATA")), true);
+      assert.equal(passiveHandlers.every((handler) => handler.commandWindows?.includes("$env:PLUGIN_ROOT")), true);
       assert.equal(passiveHandlers.every((handler) => handler.command.includes("${PLUGIN_ROOT}/scripts/hook.mjs")), true);
       assert.equal(passiveHandlers.every((handler) => handler.timeout === 1), true);
       const permission = hooks.hooks.PermissionRequest[0].hooks[0];
       assert.match(permission.command, /\$\{PLUGIN_DATA\}\/hook-runtime\/scripts\/permission-hook\.mjs/);
+      assert.match(permission.commandWindows, /permission-hook\.mjs/);
+      assert.match(permission.commandWindows, /\$env:PLUGIN_DATA/);
       assert.match(permission.command, /\$\{PLUGIN_ROOT\}\/scripts\/permission-hook\.mjs/);
     },
   },

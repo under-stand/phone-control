@@ -30,7 +30,7 @@ import { drainSpool } from "./spool.mjs";
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MAX_BODY = 1024 * 1024;
 const PAIRING_TTL_MS = 10 * 60_000;
-const VERSION = "0.6.1";
+const VERSION = "0.7.0";
 
 const MIME = {
   ".css": "text/css; charset=utf-8",

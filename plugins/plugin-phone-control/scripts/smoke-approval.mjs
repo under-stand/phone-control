@@ -126,7 +126,7 @@ async function simulateDecision({ config, cookie, sessionId, decision }) {
 
 const config = await loadConfig();
 const health = await request({ port: config.port, pathname: "/api/health" });
-assert.equal(health.body.version, "0.6.1", "Live Phone Control v0.6.1 is not running");
+assert.equal(health.body.version, "0.7.0", "Live Phone Control v0.7.0 is not running");
 
 let cookie = null;
 let temporaryDeviceId = null;

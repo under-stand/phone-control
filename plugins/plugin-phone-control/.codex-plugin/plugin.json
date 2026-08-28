@@ -1,6 +1,6 @@
 {
   "name": "plugin-phone-control",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Track, answer, continue, and receive private alerts for Codex sessions from mobile.",
   "author": {
     "name": "Phone Control contributors"

@@ -6,6 +6,7 @@ import { findTmuxSessionId } from "./tmux-utils.mjs";
 
 const CRON_MARKER = "# phone-control-managed";
 const TMUX_SESSION = "phone-control";
+const WINDOWS_TASK = "Phone Control";
 
 function run(command, args, { inherit = true, input = null, env = null } = {}) {
   return new Promise((resolve, reject) => {
@@ -33,6 +34,10 @@ function systemdQuote(value) {
 
 function shellQuote(value) {
   return `'${String(value).replaceAll("'", `'"'"'`)}'`;
+}
+
+function powershellQuote(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
 }
 
 function serviceMetadata({ root, runtime = process.execPath }) {
@@ -66,11 +71,27 @@ export function buildTmuxLauncher({ root, dataDir, host, port, runtime = process
   return `#!/bin/sh\n${metadataComment(metadata)}\nwhile true; do\n  if [ -f ${shellQuote(log)} ] && [ "$(wc -c < ${shellQuote(log)})" -ge 4194304 ]; then\n    mv ${shellQuote(log)} ${shellQuote(`${log}.1`)}\n  fi\n  ${shellQuote(metadata.runtime)} ${shellQuote(metadata.entry)} start --host ${shellQuote(host)} --port ${port} --data-dir ${shellQuote(dataDir)} --no-qr >> ${shellQuote(log)} 2>&1\n  sleep 2\ndone\n`;
 }
 
+export function buildWindowsLauncher({ root, dataDir, host, port, runtime = process.execPath }) {
+  const metadata = serviceMetadata({ root, runtime });
+  const log = path.join(dataDir, "service.log");
+  const rotatedLog = `${log}.1`;
+  return `${metadataComment(metadata)}\n$ErrorActionPreference = 'Continue'\n$logPath = ${powershellQuote(log)}\n$rotatedLogPath = ${powershellQuote(rotatedLog)}\nwhile ($true) {\n  try {\n    if ((Test-Path -LiteralPath $logPath) -and (Get-Item -LiteralPath $logPath).Length -ge 4194304) {\n      Move-Item -LiteralPath $logPath -Destination $rotatedLogPath -Force\n    }\n    & ${powershellQuote(metadata.runtime)} ${powershellQuote(metadata.entry)} 'start' '--host' ${powershellQuote(host)} '--port' ${powershellQuote(String(port))} '--data-dir' ${powershellQuote(dataDir)} '--no-qr' *>> $logPath\n  } catch {\n    ($_ | Out-String) | Add-Content -LiteralPath $logPath\n  }\n  Start-Sleep -Seconds 2\n}\n`;
+}
+
+export function buildWindowsTaskAction(launcherPath) {
+  return `powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${String(launcherPath).replaceAll('"', '""')}"`;
+}
+
+export function buildWindowsTaskRegistration(launcherPath) {
+  const action = buildWindowsTaskAction(launcherPath).slice("powershell.exe ".length);
+  return `$ErrorActionPreference = 'Stop'; $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name; $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ${powershellQuote(action)}; $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity; $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited; Register-ScheduledTask -TaskName ${powershellQuote(WINDOWS_TASK)} -Description 'Phone Control local Codex dashboard' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null`;
+}
+
 async function atomicWrite(filePath, body, mode) {
   const temporary = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(temporary, body, { mode });
   await rename(temporary, filePath);
-  await chmod(filePath, mode);
+  if (process.platform !== "win32") await chmod(filePath, mode);
 }
 
 async function validateServiceRuntime({ root, runtime = process.execPath }) {
@@ -87,6 +108,10 @@ export function userServicePath() {
 
 function daemonLauncherPath(dataDir) {
   return path.join(dataDir, "run-service.sh");
+}
+
+function windowsLauncherPath(dataDir) {
+  return path.join(dataDir, "run-service.ps1");
 }
 
 async function systemdAvailable() {
@@ -158,12 +183,54 @@ async function installTmux({ root, dataDir, host, port, runtime = process.execPa
   return { kind: "tmux+cron", path: launcher };
 }
 
+async function stopWindowsTask() {
+  await run("schtasks.exe", ["/End", "/TN", WINDOWS_TASK], { inherit: false }).catch(() => null);
+}
+
+async function removeWindowsTask() {
+  await stopWindowsTask();
+  await run("schtasks.exe", ["/Delete", "/TN", WINDOWS_TASK, "/F"], { inherit: false }).catch(() => null);
+}
+
+async function windowsTaskState() {
+  const command = `$task = Get-ScheduledTask -TaskName '${WINDOWS_TASK.replaceAll("'", "''")}' -ErrorAction SilentlyContinue; if ($null -eq $task) { exit 3 }; [Console]::Out.Write($task.State.ToString())`;
+  const result = await run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], { inherit: false }).catch(() => null);
+  return result?.code === 0 ? result.stdout.trim() : null;
+}
+
+async function installWindowsTask({ root, dataDir, host, port, runtime = process.execPath }) {
+  await validateServiceRuntime({ root, runtime });
+  await mkdir(dataDir, { recursive: true, mode: 0o700 });
+  const launcher = windowsLauncherPath(dataDir);
+  await atomicWrite(launcher, buildWindowsLauncher({ root, dataDir, host, port, runtime }), 0o700);
+  await removeWindowsTask();
+  const created = await run("powershell.exe", [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    buildWindowsTaskRegistration(launcher),
+  ], { inherit: false });
+  if (created.code !== 0) throw new Error(`Could not create the Phone Control scheduled task: ${created.stderr.trim() || created.stdout.trim()}`);
+  const started = await run("schtasks.exe", ["/Run", "/TN", WINDOWS_TASK], { inherit: false });
+  if (started.code !== 0) throw new Error(`Could not start the Phone Control scheduled task: ${started.stderr.trim() || started.stdout.trim()}`);
+  return { kind: "scheduled-task", path: launcher };
+}
+
 export async function installUserService(options) {
+  if (process.platform === "win32") return installWindowsTask(options);
   if (await systemdAvailable()) return installSystemd(options);
   return installTmux(options);
 }
 
 export async function uninstallUserService({ dataDir }) {
+  if (process.platform === "win32") {
+    await removeWindowsTask();
+    await unlink(windowsLauncherPath(dataDir)).catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+    return;
+  }
   if (await systemdAvailable()) {
     await run("systemctl", ["--user", "disable", "--now", "phone-control.service"]);
     await unlink(userServicePath()).catch((error) => {
@@ -179,6 +246,22 @@ export async function uninstallUserService({ dataDir }) {
 }
 
 export async function serviceStatus({ dataDir } = {}) {
+  if (process.platform === "win32") {
+    let definition = null;
+    try {
+      definition = parseServiceMetadata(await readFile(windowsLauncherPath(dataDir), "utf8"));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    const state = await windowsTaskState();
+    return {
+      installed: Boolean(definition && state),
+      active: state === "Running",
+      details: state || "Not installed",
+      kind: "scheduled-task",
+      definition,
+    };
+  }
   if (await systemdAvailable()) {
     let definition;
     try {
@@ -204,6 +287,14 @@ export async function serviceStatus({ dataDir } = {}) {
 
 export async function controlUserService(action, { dataDir }) {
   if (!["start", "stop", "restart"].includes(action)) throw new Error("Unsupported service action");
+  if (process.platform === "win32") {
+    if (action === "stop" || action === "restart") await stopWindowsTask();
+    if (action === "start" || action === "restart") {
+      const result = await run("schtasks.exe", ["/Run", "/TN", WINDOWS_TASK], { inherit: false });
+      if (result.code !== 0) throw new Error(`Could not ${action} the Phone Control scheduled task: ${result.stderr.trim() || result.stdout.trim()}`);
+    }
+    return;
+  }
   if (await systemdAvailable()) {
     const result = await run("systemctl", ["--user", action, "phone-control.service"]);
     if (result.code !== 0) throw new Error(`systemctl --user ${action} failed`);

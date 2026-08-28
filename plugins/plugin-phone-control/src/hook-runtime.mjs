@@ -83,11 +83,15 @@ export async function ensureStableHookRuntime() {
   } catch (error) {
     if (error.code !== "ENOENT" && error.code !== "EINVAL") throw error;
   }
-  if (currentTarget !== relativeTarget) {
+  const currentTargetPath = currentTarget ? path.resolve(pluginData, currentTarget) : null;
+  if (currentTargetPath !== path.resolve(runtimeDir)) {
     const temporaryLink = path.join(pluginData, `.hook-runtime-${process.pid}-${Date.now()}`);
     await mkdir(pluginData, { recursive: true, mode: 0o700 });
-    await symlink(relativeTarget, temporaryLink, "dir");
+    await symlink(process.platform === "win32" ? runtimeDir : relativeTarget, temporaryLink, process.platform === "win32" ? "junction" : "dir");
     try {
+      // Windows cannot atomically replace a directory junction. The root hook
+      // command remains a safe fallback during this very short upgrade window.
+      if (process.platform === "win32") await rm(stableLink, { recursive: true, force: true });
       await rename(temporaryLink, stableLink);
     } catch (error) {
       await rm(temporaryLink, { force: true });
