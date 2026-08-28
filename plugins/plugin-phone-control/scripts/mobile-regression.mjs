@@ -457,7 +457,9 @@ https://inside-fence.example
   assert.equal(await page.locator("#detail[open] .technical-details").getAttribute("open"), "", "the compact header naming action must reveal task-title controls directly");
   await page.locator('[data-task-title-form="thread-phone-created-1"] .task-title-suggest').waitFor();
   await page.locator('[data-task-title-form="thread-phone-created-1"] .task-title-suggest').click();
-  assert.equal(await page.locator('[data-task-title-form="thread-phone-created-1"] [data-task-title-input]').inputValue(), "验证手机新建会话");
+  const suggestedTaskTitle = page.locator('[data-task-title-form="thread-phone-created-1"] [data-task-title-input]');
+  await waitUntil(async () => (await suggestedTaskTitle.inputValue()) === "验证手机新建会话");
+  assert.equal(await suggestedTaskTitle.inputValue(), "验证手机新建会话");
   await page.screenshot({ path: path.join(outputDir, "02b-smart-task-title.png"), fullPage: false });
   await page.locator('[data-task-title-form="thread-phone-created-1"] [data-task-title-input]').fill("手机新建会话验收");
   await page.locator('[data-task-title-form="thread-phone-created-1"] .task-title-save').click();
