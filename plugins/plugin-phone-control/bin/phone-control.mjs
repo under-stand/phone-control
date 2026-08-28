@@ -14,7 +14,7 @@ import {
   serviceStatus,
   uninstallUserService,
 } from "../src/service-manager.mjs";
-import { nodeRuntimeStatus, serviceDefinitionStatus } from "../src/service-diagnostics.mjs";
+import { expectedStablePluginRoot, nodeRuntimeStatus, serviceDefinitionStatus } from "../src/service-diagnostics.mjs";
 import {
   configureRelay,
   controlRelayService,
@@ -57,7 +57,7 @@ function applyEnvironment(flags, command) {
 }
 
 function printHelp() {
-  process.stdout.write(`Phone Control 0.6.0\n\n`);
+  process.stdout.write(`Phone Control 0.6.1\n\n`);
   process.stdout.write(`Usage:\n`);
   process.stdout.write(`  phone-control start [--host HOST] [--port PORT] [--public-url URL]\n`);
   process.stdout.write(`  phone-control pair [--url URL] [--no-qr]\n`);
@@ -96,7 +96,7 @@ async function doctor() {
   const appServerSocket = path.join(codexHome, "app-server-control", "app-server-control.sock");
   const appServerAvailable = await access(appServerSocket).then(() => true).catch(() => false);
   const node = nodeRuntimeStatus();
-  const stableRoot = path.join(os.homedir(), "plugins", "plugin-phone-control");
+  const stableRoot = expectedStablePluginRoot({ currentRoot: ROOT, homeDir: os.homedir() });
   const serviceDefinition = serviceDefinitionStatus({ service: daemon, expectedRoot: stableRoot });
   let deviceCounts = { active: 0, revoked: 0 };
   try {
@@ -110,7 +110,7 @@ async function doctor() {
     { ok: node.supported, text: `Node ${process.version}${node.supported ? " is supported" : ` is end-of-life for this service; use Node ${node.minimumMajor}+`}` },
     { ok: daemon.installed && daemon.active, text: daemon.installed ? `Background service is ${daemon.active ? "active" : "inactive"}` : "Background service is not installed" },
     { ok: serviceDefinition.known, text: serviceDefinition.known ? "Service definition includes versioned runtime metadata" : "Service definition is legacy and should be reinstalled" },
-    { ok: serviceDefinition.rootMatches, text: serviceDefinition.rootMatches ? "Service starts from the stable personal plugin root" : `Service does not start from ${stableRoot}` },
+    { ok: serviceDefinition.rootMatches, text: serviceDefinition.rootMatches ? "Service starts from this stable plugin checkout" : `Service does not start from stable plugin source ${stableRoot}` },
     { ok: serviceDefinition.runtimeMatches, text: serviceDefinition.runtimeMatches ? "Service runtime matches this verified Node executable" : "Service runtime differs from the current verified Node executable" },
     { ok: appServerAvailable, text: appServerAvailable ? "Managed Codex App Server socket found" : "Managed Codex App Server socket not found; sessions remain view-only" },
     { ok: deviceCounts.revoked <= 20, text: `${deviceCounts.active} active device(s), ${deviceCounts.revoked} retained revoked record(s)` },

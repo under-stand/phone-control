@@ -18,6 +18,14 @@ export function nodeRuntimeStatus(version = process.version) {
   };
 }
 
+export function expectedStablePluginRoot({ currentRoot, homeDir } = {}) {
+  const fallbackRoot = homeDir ? path.join(homeDir, "plugins", "plugin-phone-control") : null;
+  if (!currentRoot) return fallbackRoot;
+  const resolvedRoot = path.resolve(currentRoot);
+  const cacheSegment = `${path.sep}.codex${path.sep}plugins${path.sep}cache${path.sep}`;
+  return resolvedRoot.includes(cacheSegment) && fallbackRoot ? fallbackRoot : resolvedRoot;
+}
+
 function samePath(left, right) {
   if (!left || !right) return false;
   const comparable = (value) => {

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { buildSystemdUnit, buildTmuxLauncher, parseServiceMetadata } from "../src/service-manager.mjs";
 import { findTmuxSessionId } from "../src/tmux-utils.mjs";
-import { nodeRuntimeStatus, serviceDefinitionStatus } from "../src/service-diagnostics.mjs";
+import { expectedStablePluginRoot, nodeRuntimeStatus, serviceDefinitionStatus } from "../src/service-diagnostics.mjs";
 
 const options = {
   root: "/opt/phone control",
@@ -35,6 +35,19 @@ export const tests = [
         assert.match(definition, /127\.0\.0\.1/);
         assert.match(definition, /8787/);
       }
+    },
+  },
+  {
+    name: "accepts a stable repository checkout without trusting a versioned Codex cache root",
+    async run() {
+      assert.equal(
+        expectedStablePluginRoot({ currentRoot: "/srv/phone-control/plugins/plugin-phone-control", homeDir: "/home/me" }),
+        "/srv/phone-control/plugins/plugin-phone-control",
+      );
+      assert.equal(
+        expectedStablePluginRoot({ currentRoot: "/home/me/.codex/plugins/cache/phone-control/plugin-phone-control/0.6.1", homeDir: "/home/me" }),
+        "/home/me/plugins/plugin-phone-control",
+      );
     },
   },
   {

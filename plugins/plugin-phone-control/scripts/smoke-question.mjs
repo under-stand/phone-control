@@ -117,7 +117,7 @@ async function waitForPhoneSubscription(config, cookie, threadId, timeoutMs = 20
 const config = await loadConfig();
 const health = await request({ port: config.port, pathname: "/api/health" });
 assert.equal(health.statusCode, 200, "Phone Control is not reachable");
-assert.equal(health.body.version, "0.6.0", "Live Phone Control v0.6.0 is not running");
+assert.equal(health.body.version, "0.6.1", "Live Phone Control v0.6.1 is not running");
 assert.equal(config.interactions.enabled, true, "Live phone answers are disabled");
 
 let cookie = null;

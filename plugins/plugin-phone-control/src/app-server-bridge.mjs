@@ -18,7 +18,7 @@ const CODEX_STATUS_CACHE_MS = 30_000;
 const MODEL_CATALOG_CACHE_MS = 5 * 60_000;
 const MAX_PHONE_INPUT_CHARS = 4_000;
 const MAX_COMMAND_RECORDS = 512;
-const CLIENT_VERSION = "0.6.0";
+const CLIENT_VERSION = "0.6.1";
 const RESUME_INITIAL_TURNS_PAGE = Object.freeze({
   limit: 1,
   sortDirection: "desc",
