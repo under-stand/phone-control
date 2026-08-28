@@ -6,6 +6,16 @@ import { mkdir, rm } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { createPhoneControlServer } from "../src/server.mjs";
 
+if (process.env.GITHUB_ACTIONS === "true") {
+  process.on("uncaughtExceptionMonitor", (error) => {
+    const details = String(error?.stack || error || "Unknown mobile regression failure")
+      .replaceAll("%", "%25")
+      .replaceAll("\r", "%0D")
+      .replaceAll("\n", "%0A");
+    process.stderr.write(`::error file=scripts/mobile-regression.mjs,title=Mobile regression failed::${details}\n`);
+  });
+}
+
 const playwrightPath = process.env.PHONE_CONTROL_PLAYWRIGHT || null;
 const browserPath = process.env.PHONE_CONTROL_BROWSER || null;
 const outputDir = path.resolve(process.env.PHONE_CONTROL_AUDIT_DIR || "artifacts/mobile-regression");
