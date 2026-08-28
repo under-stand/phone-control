@@ -89,7 +89,7 @@ async function sendPhoneInput(config, cookie, session, text) {
 const config = await loadConfig();
 const health = await request({ port: config.port, pathname: "/api/health" });
 assert.equal(health.statusCode, 200, "Phone Control is not reachable");
-assert.equal(health.body.version, "0.7.1", "Live Phone Control v0.7.1 is not running");
+assert.equal(health.body.version, "0.8.0", "Live Phone Control v0.8.0 is not running");
 assert.equal(config.interactions.enabled, true, "Live phone controls are disabled");
 
 let cookie = null;

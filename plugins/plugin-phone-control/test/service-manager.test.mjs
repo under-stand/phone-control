@@ -3,11 +3,13 @@ import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  buildLaunchdPlist,
   buildSystemdUnit,
   buildTmuxLauncher,
   buildWindowsLauncher,
   buildWindowsTaskAction,
   buildWindowsTaskRegistration,
+  launchdServicePath,
   parseServiceMetadata,
 } from "../src/service-manager.mjs";
 import { findTmuxSessionId } from "../src/tmux-utils.mjs";
@@ -34,7 +36,7 @@ export const tests = [
   {
     name: "builds service definitions with explicit runtime and stable plugin metadata",
     async run() {
-      for (const definition of [buildSystemdUnit(options), buildTmuxLauncher(options), buildWindowsLauncher(options)]) {
+      for (const definition of [buildSystemdUnit(options), buildTmuxLauncher(options), buildWindowsLauncher(options), buildLaunchdPlist(options)]) {
         assert.deepEqual(parseServiceMetadata(definition), {
           runtime: options.runtime,
           entry: "/opt/phone control/bin/phone-control.mjs",
@@ -42,6 +44,28 @@ export const tests = [
         assert.match(definition, /127\.0\.0\.1/);
         assert.match(definition, /8787/);
       }
+    },
+  },
+  {
+    name: "builds a native macOS launch agent with restart and explicit paths",
+    async run() {
+      const mac = buildLaunchdPlist(options);
+      assert.match(mac, /<string>com\.phone-control\.agent<\/string>/);
+      assert.match(mac, /<key>KeepAlive<\/key>\s*<true\/>/);
+      assert.match(mac, /<key>RunAtLoad<\/key>\s*<true\/>/);
+      assert.match(mac, /\/opt\/node 22\/bin\/node/);
+      assert.match(mac, /\/opt\/phone control\/bin\/phone-control\.mjs/);
+      assert.equal(
+        launchdServicePath("/Users/me"),
+        "/Users/me/Library/LaunchAgents/com.phone-control.agent.plist",
+      );
+      const escapedOptions = { ...options, root: "/Applications/Phone & <Control>" };
+      const escaped = buildLaunchdPlist(escapedOptions);
+      assert.match(escaped, /Phone &amp; &lt;Control&gt;/);
+      assert.deepEqual(parseServiceMetadata(escaped), {
+        runtime: escapedOptions.runtime,
+        entry: "/Applications/Phone & <Control>/bin/phone-control.mjs",
+      });
     },
   },
   {

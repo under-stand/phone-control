@@ -166,13 +166,38 @@ export const tests = [
           token: "keep-this-token",
         })}\n`, { mode: 0o600 });
         const config = await loadConfig({ environment: { PHONE_CONTROL_DATA_DIR: dataDir } });
-        assert.equal(config.version, 3);
+        assert.equal(config.version, 4);
         assert.equal(config.token, "keep-this-token");
         assert.equal(config.approvals.enabled, false);
         assert.equal(config.interactions.enabled, true);
+        assert.equal(config.interactions.transport, "auto");
+        assert.equal(config.codexCommand, "codex");
         const stored = JSON.parse(await readFile(path.join(dataDir, "config.json"), "utf8"));
-        assert.equal(stored.version, 3);
+        assert.equal(stored.version, 4);
         assert.equal(stored.retentionDays, 14);
+      } finally {
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: "persists an explicit Codex executable and app-server transport",
+    async run() {
+      const dataDir = await mkdtemp(path.join(os.tmpdir(), "phone-control-config-transport-"));
+      try {
+        const config = await loadConfig({
+          environment: {
+            PHONE_CONTROL_DATA_DIR: dataDir,
+            PHONE_CONTROL_CODEX_COMMAND: "C:\\Tools\\Codex\\codex.exe",
+            PHONE_CONTROL_APP_SERVER_TRANSPORT: "stdio",
+          },
+        });
+        assert.equal(config.codexCommand, "C:\\Tools\\Codex\\codex.exe");
+        assert.equal(config.interactions.transport, "stdio");
+
+        const restored = await loadConfig({ environment: { PHONE_CONTROL_DATA_DIR: dataDir } });
+        assert.equal(restored.codexCommand, "C:\\Tools\\Codex\\codex.exe");
+        assert.equal(restored.interactions.transport, "stdio");
       } finally {
         await rm(dataDir, { recursive: true, force: true });
       }

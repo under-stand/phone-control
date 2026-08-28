@@ -30,7 +30,7 @@ import { drainSpool } from "./spool.mjs";
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MAX_BODY = 1024 * 1024;
 const PAIRING_TTL_MS = 10 * 60_000;
-const VERSION = "0.7.1";
+const VERSION = "0.8.0";
 
 const MIME = {
   ".css": "text/css; charset=utf-8",
@@ -222,6 +222,8 @@ export async function createPhoneControlServer({
       ? new CodexAppServerBridge({
         auditLogPath: paths.auditLog,
         socketPath: path.join(codexHome, "app-server-control", "app-server-control.sock"),
+        codexCommand: config.codexCommand,
+        transportMode: config.interactions.transport,
       })
       : null
     : appServerBridge;

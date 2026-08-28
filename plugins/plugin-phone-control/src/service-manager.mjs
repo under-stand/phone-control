@@ -7,6 +7,7 @@ import { findTmuxSessionId } from "./tmux-utils.mjs";
 const CRON_MARKER = "# phone-control-managed";
 const TMUX_SESSION = "phone-control";
 const WINDOWS_TASK = "Phone Control";
+const LAUNCHD_LABEL = "com.phone-control.agent";
 
 function run(command, args, { inherit = true, input = null, env = null } = {}) {
   return new Promise((resolve, reject) => {
@@ -48,12 +49,36 @@ function metadataComment(metadata) {
   return `# phone-control-meta ${JSON.stringify(metadata)}`;
 }
 
+function xmlEscape(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function xmlUnescape(value) {
+  return String(value)
+    .replaceAll("&apos;", "'")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&gt;", ">")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&amp;", "&");
+}
+
 export function parseServiceMetadata(value) {
   if (typeof value !== "string") return null;
   const line = value.split("\n").find((row) => row.startsWith("# phone-control-meta "));
-  if (!line) return null;
+  const launchdMetadata = value.match(/<key>PhoneControlMetadata<\/key>\s*<string>([\s\S]*?)<\/string>/)?.[1];
+  const serialized = line
+    ? line.slice("# phone-control-meta ".length)
+    : launchdMetadata
+      ? xmlUnescape(launchdMetadata)
+      : null;
+  if (!serialized) return null;
   try {
-    const parsed = JSON.parse(line.slice("# phone-control-meta ".length));
+    const parsed = JSON.parse(serialized);
     return typeof parsed.runtime === "string" && typeof parsed.entry === "string" ? parsed : null;
   } catch {
     return null;
@@ -76,6 +101,49 @@ export function buildWindowsLauncher({ root, dataDir, host, port, runtime = proc
   const log = path.join(dataDir, "service.log");
   const rotatedLog = `${log}.1`;
   return `${metadataComment(metadata)}\n$ErrorActionPreference = 'Continue'\n$logPath = ${powershellQuote(log)}\n$rotatedLogPath = ${powershellQuote(rotatedLog)}\nwhile ($true) {\n  try {\n    if ((Test-Path -LiteralPath $logPath) -and (Get-Item -LiteralPath $logPath).Length -ge 4194304) {\n      Move-Item -LiteralPath $logPath -Destination $rotatedLogPath -Force\n    }\n    & ${powershellQuote(metadata.runtime)} ${powershellQuote(metadata.entry)} 'start' '--host' ${powershellQuote(host)} '--port' ${powershellQuote(String(port))} '--data-dir' ${powershellQuote(dataDir)} '--no-qr' *>> $logPath\n  } catch {\n    ($_ | Out-String) | Add-Content -LiteralPath $logPath\n  }\n  Start-Sleep -Seconds 2\n}\n`;
+}
+
+export function buildLaunchdPlist({ root, dataDir, host, port, runtime = process.execPath }) {
+  const metadata = serviceMetadata({ root, runtime });
+  const argumentsList = [
+    metadata.runtime,
+    metadata.entry,
+    "start",
+    "--host",
+    host,
+    "--port",
+    String(port),
+    "--data-dir",
+    dataDir,
+    "--no-qr",
+  ].map((argument) => `    <string>${xmlEscape(argument)}</string>`).join("\n");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${LAUNCHD_LABEL}</string>
+  <key>PhoneControlMetadata</key>
+  <string>${xmlEscape(JSON.stringify(metadata))}</string>
+  <key>ProgramArguments</key>
+  <array>
+${argumentsList}
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>ThrottleInterval</key>
+  <integer>2</integer>
+  <key>StandardOutPath</key>
+  <string>${xmlEscape(path.join(dataDir, "service.log"))}</string>
+  <key>StandardErrorPath</key>
+  <string>${xmlEscape(path.join(dataDir, "service-error.log"))}</string>
+</dict>
+</plist>
+`;
 }
 
 export function buildWindowsTaskAction(launcherPath) {
@@ -112,6 +180,18 @@ function daemonLauncherPath(dataDir) {
 
 function windowsLauncherPath(dataDir) {
   return path.join(dataDir, "run-service.ps1");
+}
+
+export function launchdServicePath(homeDir = os.homedir()) {
+  return path.join(homeDir, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
+}
+
+function launchdDomain() {
+  return `gui/${process.getuid()}`;
+}
+
+function launchdTarget() {
+  return `${launchdDomain()}/${LAUNCHD_LABEL}`;
 }
 
 async function systemdAvailable() {
@@ -217,8 +297,31 @@ async function installWindowsTask({ root, dataDir, host, port, runtime = process
   return { kind: "scheduled-task", path: launcher };
 }
 
+async function unloadLaunchd(servicePath) {
+  await run("launchctl", ["bootout", launchdDomain(), servicePath], { inherit: false }).catch(() => null);
+}
+
+async function loadLaunchd(servicePath) {
+  const loaded = await run("launchctl", ["bootstrap", launchdDomain(), servicePath], { inherit: false });
+  if (loaded.code !== 0) throw new Error(`Could not load the Phone Control launch agent: ${loaded.stderr.trim() || loaded.stdout.trim()}`);
+  const started = await run("launchctl", ["kickstart", "-k", launchdTarget()], { inherit: false });
+  if (started.code !== 0) throw new Error(`Could not start the Phone Control launch agent: ${started.stderr.trim() || started.stdout.trim()}`);
+}
+
+async function installLaunchd({ root, dataDir, host, port, runtime = process.execPath }) {
+  await validateServiceRuntime({ root, runtime });
+  await mkdir(dataDir, { recursive: true, mode: 0o700 });
+  const servicePath = launchdServicePath();
+  await mkdir(path.dirname(servicePath), { recursive: true, mode: 0o700 });
+  await unloadLaunchd(servicePath);
+  await atomicWrite(servicePath, buildLaunchdPlist({ root, dataDir, host, port, runtime }), 0o600);
+  await loadLaunchd(servicePath);
+  return { kind: "launchd", path: servicePath };
+}
+
 export async function installUserService(options) {
   if (process.platform === "win32") return installWindowsTask(options);
+  if (process.platform === "darwin") return installLaunchd(options);
   if (await systemdAvailable()) return installSystemd(options);
   return installTmux(options);
 }
@@ -227,6 +330,14 @@ export async function uninstallUserService({ dataDir }) {
   if (process.platform === "win32") {
     await removeWindowsTask();
     await unlink(windowsLauncherPath(dataDir)).catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+    return;
+  }
+  if (process.platform === "darwin") {
+    const servicePath = launchdServicePath();
+    await unloadLaunchd(servicePath);
+    await unlink(servicePath).catch((error) => {
       if (error.code !== "ENOENT") throw error;
     });
     return;
@@ -262,6 +373,24 @@ export async function serviceStatus({ dataDir } = {}) {
       definition,
     };
   }
+  if (process.platform === "darwin") {
+    const servicePath = launchdServicePath();
+    let definition = null;
+    try {
+      definition = parseServiceMetadata(await readFile(servicePath, "utf8"));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    const result = await run("launchctl", ["print", launchdTarget()], { inherit: false }).catch(() => null);
+    const active = Boolean(result?.code === 0 && /\bstate\s*=\s*running\b/i.test(result.stdout));
+    return {
+      installed: Boolean(definition),
+      active,
+      details: active ? "launch agent running" : definition ? "launch agent installed, inactive" : "Not installed",
+      kind: "launchd",
+      definition,
+    };
+  }
   if (await systemdAvailable()) {
     let definition;
     try {
@@ -293,6 +422,12 @@ export async function controlUserService(action, { dataDir }) {
       const result = await run("schtasks.exe", ["/Run", "/TN", WINDOWS_TASK], { inherit: false });
       if (result.code !== 0) throw new Error(`Could not ${action} the Phone Control scheduled task: ${result.stderr.trim() || result.stdout.trim()}`);
     }
+    return;
+  }
+  if (process.platform === "darwin") {
+    const servicePath = launchdServicePath();
+    if (action === "stop" || action === "restart") await unloadLaunchd(servicePath);
+    if (action === "start" || action === "restart") await loadLaunchd(servicePath);
     return;
   }
   if (await systemdAvailable()) {

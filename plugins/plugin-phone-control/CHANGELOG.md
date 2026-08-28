@@ -2,6 +2,14 @@
 
 本项目遵循语义化版本。这里只记录用户可见变化；开发方向见 [ROADMAP.md](ROADMAP.md)。
 
+## 0.8.0 - 2026-08-29
+
+- 新增跨平台 App Server Transport：Linux 与 macOS 优先使用 Unix Socket，缺失时自动回退到受管 stdio；原生 Windows 直接使用 stdio。
+- macOS 后台服务改用当前用户的原生 `launchd`，不再要求另装 `tmux` 才能常驻。
+- Windows 一键安装器现在验证 App Server、保存实际 Codex 路径，并启用新建、恢复空闲会话、继续对话和停止手机所拥有 turn 的能力。
+- 保留精确运行时所有权边界：正在由另一个 App/CLI 进程执行且无法验证所有权的 turn 继续保持只读。
+- `doctor` 现在分别检查 Unix Socket 与 stdio 能力，不再把“没有 Unix Socket”误判为所有平台都无法控制。
+
 ## 0.7.1 - 2026-08-29
 
 - 修复当前轮次中同一条用户问题偶尔显示两次的问题。

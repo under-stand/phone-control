@@ -15,11 +15,15 @@ export const tests = [
       assert.match(script, /@openai\/codex@latest/);
       assert.match(script, /plugin', 'marketplace', 'add'/);
       assert.match(script, /plugin', 'add'/);
+      assert.match(script, /app-server --help/);
       assert.match(script, /'ci', '--omit=dev'/);
-      assert.match(script, /'service', 'install', '--runtime'/);
+      assert.match(script, /'service', 'install',[\s\S]*'--runtime'/);
+      assert.match(script, /'--codex-command', \$codex/);
+      assert.match(script, /'--app-server-transport', 'auto'/);
       assert.match(script, /tailscale serve --bg 8787/);
       assert.match(script, /127\.0\.0\.1:8787\/api\/health/);
       assert.match(script, /fully quit and reopen Codex/);
+      assert.match(script, /Native Windows uses a managed local Codex App Server/);
       assert.doesNotMatch(script, /password\s*=|token\s*=/i);
     },
   },

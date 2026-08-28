@@ -4,7 +4,7 @@ import { appendFile, mkdir, stat } from "node:fs/promises";
 import path, { dirname } from "node:path";
 import { clampText } from "./utils.mjs";
 import { resolveCodexHome } from "./paths.mjs";
-import { connectUnixWebSocket } from "./unix-websocket.mjs";
+import { createAppServerTransport } from "./app-server-transport.mjs";
 
 // Match the official remote App Server client's bounded message envelope. The
 // bridge still avoids large history responses by using metadata-only resume.
@@ -18,7 +18,7 @@ const CODEX_STATUS_CACHE_MS = 30_000;
 const MODEL_CATALOG_CACHE_MS = 5 * 60_000;
 const MAX_PHONE_INPUT_CHARS = 4_000;
 const MAX_COMMAND_RECORDS = 512;
-const CLIENT_VERSION = "0.7.1";
+const CLIENT_VERSION = "0.8.0";
 const RESUME_INITIAL_TURNS_PAGE = Object.freeze({
   limit: 1,
   sortDirection: "desc",
@@ -207,8 +207,8 @@ function approvalConfiguration(configResult) {
   };
 }
 
-function defaultTransportFactory({ socketPath }) {
-  return connectUnixWebSocket(socketPath);
+function defaultTransportFactory(options) {
+  return createAppServerTransport(options);
 }
 
 function normalizePhoneInput(value, images = []) {
@@ -353,6 +353,9 @@ function normalizeAnswers(interaction, input) {
 export class CodexAppServerBridge extends EventEmitter {
   constructor({
     socketPath = path.join(resolveCodexHome(), "app-server-control", "app-server-control.sock"),
+    codexCommand = process.env.PHONE_CONTROL_CODEX_COMMAND || "codex",
+    transportMode = process.env.PHONE_CONTROL_APP_SERVER_TRANSPORT || "auto",
+    platform = process.platform,
     transportFactory = defaultTransportFactory,
     requestTimeoutMs = REQUEST_TIMEOUT_MS,
     loadedThreadRefreshMs = LOADED_THREAD_REFRESH_MS,
@@ -362,6 +365,9 @@ export class CodexAppServerBridge extends EventEmitter {
   } = {}) {
     super();
     this.socketPath = socketPath;
+    this.codexCommand = codexCommand;
+    this.transportMode = transportMode;
+    this.platform = platform;
     this.transportFactory = transportFactory;
     this.requestTimeoutMs = requestTimeoutMs;
     this.loadedThreadRefreshMs = loadedThreadRefreshMs;
@@ -369,6 +375,7 @@ export class CodexAppServerBridge extends EventEmitter {
     this.reconnect = reconnect;
     this.auditLogPath = auditLogPath;
     this.transport = null;
+    this.transportKind = platform === "win32" || transportMode === "stdio" ? "managed-stdio" : "auto";
     this.buffer = "";
     this.nextRequestId = 1;
     this.clientRequests = new Map();
@@ -418,7 +425,7 @@ export class CodexAppServerBridge extends EventEmitter {
     return {
       connected: this.connected,
       initialized: this.initialized,
-      transport: "managed-unix-websocket",
+      transport: this.transportKind,
       loadedThreads: Array.from(this.loadedThreads),
       subscribedThreads: Array.from(this.subscribedThreads),
       threadStates: Object.fromEntries(Array.from(this.threadStates.entries()).map(([threadId, state]) => [threadId, { ...state }])),
@@ -458,9 +465,15 @@ export class CodexAppServerBridge extends EventEmitter {
     this.clearTransport();
     let transport;
     try {
-      transport = await this.transportFactory({ socketPath: this.socketPath });
+      transport = await this.transportFactory({
+        socketPath: this.socketPath,
+        command: this.codexCommand,
+        mode: this.transportMode,
+        platform: this.platform,
+      });
       if (!transport?.readable || !transport?.writable) throw new Error("App-server transport is incomplete");
       this.transport = transport;
+      this.transportKind = transport.kind || "custom";
       this.attachTransport(transport);
       const initialized = await this.request("initialize", {
         clientInfo: { name: "phone-control", title: "Phone Control", version: CLIENT_VERSION },
@@ -510,7 +523,7 @@ export class CodexAppServerBridge extends EventEmitter {
     });
     transport.closed?.then((details) => {
       if (this.transport !== transport) return;
-      const message = details?.error?.message || `App-server proxy closed${details?.code == null ? "" : ` with code ${details.code}`}`;
+      const message = details?.error?.message || `App-server transport closed${details?.code == null ? "" : ` with code ${details.code}`}`;
       this.handleDisconnect(new Error(message));
     });
   }

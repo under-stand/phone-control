@@ -33,23 +33,26 @@ Phone Control 的“查看任务”和“控制任务”依赖不同能力。读
 续聊、新建、中止、回答问题等完整控制还要求 Phone Control 能访问同一运行环境中的受管 Codex
 App Server。可运行 `phone-control doctor` 检查本机是否找到该控制通道。
 
-| 电脑端运行方式 | 电脑界面 | 追踪、通知、仪表盘 | 完整手机控制 | 当前状态 |
+| 电脑端运行方式 | 电脑界面 | 追踪、通知、仪表盘 | 安全手机控制 | 控制通道 |
 | --- | --- | --- | --- | --- |
-| Linux 原生 | App、IDE 或 CLI | 支持 | App Server 可用时支持 | 主要验证环境 |
-| macOS | App、IDE 或 CLI | 支持 | App Server 可用时支持 | 支持手动安装，仍需更多真机验证 |
-| Windows 原生 | Windows App 或 CLI | 支持 | 暂不完整 | 一键安装器支持追踪模式 |
-| Windows App + WSL2 Agent | 仍然是 Windows App | 目标支持 | 尚未完成一键集成与真机验证 | 后续重点支持模式 |
-| WSL2 中的 Codex CLI | CLI | 支持 | 同一发行版内 App Server 可用时支持 | 当前可用的 Windows 完整控制路径 |
+| Linux 原生 | App、IDE 或 CLI | 支持 | 支持 | 优先复用 Unix Socket，缺失时回退 stdio |
+| macOS | App、IDE 或 CLI | 支持 | 支持 | 优先复用 Unix Socket，缺失时回退 stdio |
+| Windows 原生 | Windows App 或 CLI | 支持 | 支持 | Phone Control 管理本机 stdio App Server |
+| Windows App + WSL2 Agent | 仍然是 Windows App | 支持 | 同一侧安装时支持 | 根据 Phone Control 所在系统自动选择通道 |
+| WSL2 中的 Codex CLI | CLI | 支持 | 支持 | WSL2 内的 Unix Socket 或 stdio |
 
 WSL2 是 **Agent 的执行环境**，不是另一种界面。在 Windows Codex App 的设置中把 Agent
 切换到 WSL2 后，用户仍然使用桌面 App，只是命令、工具和 Linux 沙箱在 WSL2 内运行；只有在
 WSL2 终端中直接执行 `codex` 时才是 CLI。参见 OpenAI 官方的
 [Windows App 说明](https://learn.chatgpt.com/codex/windows/windows-app)与
-[WSL2 说明](https://learn.chatgpt.com/codex/windows/wsl)。
+[WSL2 说明](https://learn.chatgpt.com/codex/windows/wsl)。Phone Control 不要求 Windows 必须使用
+WSL2：原生安装会启动自己管理的本机 stdio App Server。官方 App Server 支持 stdio、Unix Socket
+和实验性的 WebSocket；Phone Control 默认使用前两种稳定本机通道，参见
+[App Server 协议](https://learn.chatgpt.com/codex/app-server)。
 
-目前 Windows 一键安装器只自动配置原生 Windows 追踪模式，不会自动安装或连接 WSL2 侧服务。
-需要成熟的完整控制时，先在同一个 WSL2 发行版中运行 Codex CLI 与 Phone Control；希望保留
-Windows App 界面时，可以等待后续专用的 App + WSL2 安装流程，或参与该模式的联调。
+控制仍遵循精确所有权边界：空闲会话可以安全恢复，手机启动的 turn 可以追加或停止；如果某个
+turn 已经在另一个 Codex App/CLI 进程中运行，而当前 App Server 无法证明自己拥有它，手机端保持
+只读，等它结束后再恢复。这是会话安全约束，不是 Windows 或 macOS 功能缺失。
 
 ## 快速开始
 
@@ -75,9 +78,9 @@ Control 后台任务本身以当前用户权限运行，不要求管理员权限
 
 安装完成后完全退出并重新打开 Codex，新建一个 thread，在 `/hooks` 中检查并信任当前 Hooks。
 
-原生 Windows 当前可以追踪 App/CLI 历史、显示实时 Hook 状态、通知和手机仪表盘。完整控制的
-当前可用路径是让 Codex CLI 与 Phone Control 运行在同一个 WSL2 发行版；Windows App + WSL2
-Agent 的自动配置与真机验证尚未完成。两者区别见上方“平台与功能边界”。
+原生 Windows 除了追踪 App/CLI 历史、显示实时 Hook 状态、通知和手机仪表盘，还会通过受管 stdio
+App Server 提供新建、恢复空闲会话、继续对话和停止手机所拥有 turn 的能力。正在由另一个
+Windows App 进程执行的 turn 保持只读，结束后即可从手机安全恢复。
 
 ### Linux、macOS 与 WSL2 手动安装
 
@@ -126,7 +129,9 @@ npm run verify
 
 ```bash
 node ./bin/phone-control.mjs doctor
-node ./bin/phone-control.mjs service install --runtime "$(command -v node)"
+node ./bin/phone-control.mjs service install \
+  --runtime "$(command -v node)" \
+  --codex-command "$(command -v codex)"
 node ./bin/phone-control.mjs service status
 ```
 
@@ -134,6 +139,8 @@ node ./bin/phone-control.mjs service status
 自动使用独立的 tmux 会话和 `@reboot` crontab。
 
 `service install` 会固定当前 Node 和插件路径。升级 Node 或移动项目后，需要重新执行一次该命令。
+Linux 优先使用当前用户的 systemd，macOS 使用当前用户的原生 `launchd`，其他 Unix 环境回退到
+`tmux + cron`；Windows 一键安装器创建当前用户的计划任务。
 
 #### 4. 让手机访问
 
@@ -266,7 +273,9 @@ codex plugin add plugin-phone-control@phone-control
 cd plugins/plugin-phone-control
 npm ci
 npm run verify
-node ./bin/phone-control.mjs service install --runtime "$(command -v node)"
+node ./bin/phone-control.mjs service install \
+  --runtime "$(command -v node)" \
+  --codex-command "$(command -v codex)"
 ```
 
 更新后新建 Codex thread，以加载新的插件、Hooks 和工具定义。Phone Control 的设备、配置和历史
@@ -277,9 +286,9 @@ node ./bin/phone-control.mjs service install --runtime "$(command -v node)"
 | 现象 | 处理方式 |
 | --- | --- |
 | 手机打不开页面 | 运行 `relay doctor` 或检查 `tailscale serve status` |
-| 页面一直只读 | 运行 `doctor`，确认 Managed App Server socket 已找到 |
+| 页面一直只读 | 运行 `doctor`，确认 Unix Socket 或受管 stdio App Server 可用；另一个客户端正在运行的 turn 会保持只读 |
 | Hook 显示失败 | 更新插件后重启 Codex，并在 `/hooks` 重新检查当前哈希 |
-| Windows 安装后只能查看 | 原生 App Server 暂无控制 socket；需完整控制时在同一 WSL2 发行版中运行 Codex 与 Phone Control |
+| Windows 安装后只能查看 | 更新到支持 stdio 的 Codex，重新运行一键安装器；再用 `doctor` 检查保存的 Codex 路径与 App Server |
 | 后台回来后显示断线 | 点击顶栏连接状态立即探测；页面会同时重建 SSE |
 | 收不到系统通知 | 确认使用 HTTPS，并以“开启提醒”时的测试通知为准 |
 | 新版本没有生效 | 重新执行 `codex plugin add`、`service install`，然后新建 thread |

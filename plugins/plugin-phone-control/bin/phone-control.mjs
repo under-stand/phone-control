@@ -15,6 +15,7 @@ import {
   uninstallUserService,
 } from "../src/service-manager.mjs";
 import { expectedStablePluginRoot, nodeRuntimeStatus, serviceDefinitionStatus } from "../src/service-diagnostics.mjs";
+import { probeAppServerCommand } from "../src/app-server-transport.mjs";
 import {
   configureRelay,
   controlRelayService,
@@ -52,19 +53,21 @@ function applyEnvironment(flags, command) {
   if (flags.port) process.env.PHONE_CONTROL_PORT = flags.port;
   if (flags["data-dir"]) process.env.PHONE_CONTROL_DATA_DIR = flags["data-dir"];
   if (flags["codex-home"]) process.env.CODEX_HOME = flags["codex-home"];
+  if (flags["codex-command"]) process.env.PHONE_CONTROL_CODEX_COMMAND = flags["codex-command"];
+  if (flags["app-server-transport"]) process.env.PHONE_CONTROL_APP_SERVER_TRANSPORT = flags["app-server-transport"];
   if (flags["public-url"] && command !== "relay") process.env.PHONE_CONTROL_PUBLIC_URL = flags["public-url"];
   if (flags["secure-cookies"]) process.env.PHONE_CONTROL_SECURE_COOKIES = "1";
 }
 
 function printHelp() {
-  process.stdout.write(`Phone Control 0.7.1\n\n`);
+  process.stdout.write(`Phone Control 0.8.0\n\n`);
   process.stdout.write(`Usage:\n`);
-  process.stdout.write(`  phone-control start [--host HOST] [--port PORT] [--public-url URL]\n`);
+  process.stdout.write(`  phone-control start [--host HOST] [--port PORT] [--public-url URL] [--codex-command PATH]\n`);
   process.stdout.write(`  phone-control pair [--url URL] [--no-qr]\n`);
   process.stdout.write(`  phone-control approvals <enable|disable|status>\n`);
   process.stdout.write(`  phone-control interactions <enable|disable|status>\n`);
   process.stdout.write(`  phone-control service <install|uninstall|status|start|stop|restart> [--runtime NODE]\n`);
-  process.stdout.write(`  phone-control doctor [--data-dir PATH] [--codex-home PATH]\n\n`);
+  process.stdout.write(`  phone-control doctor [--data-dir PATH] [--codex-home PATH] [--codex-command PATH]\n\n`);
   process.stdout.write("  phone-control relay <configure|install|uninstall|status|doctor|start|stop|restart|activate|deactivate>\n");
   process.stdout.write("Tailscale Serve or an outbound VPS relay can proxy the default loopback listener.\n");
 }
@@ -94,7 +97,22 @@ async function doctor() {
   const rolloutCount = await countRollouts(codexHome);
   const daemon = await serviceStatus({ dataDir: config.dataDir }).catch((error) => ({ installed: false, active: false, details: error.message }));
   const appServerSocket = path.join(codexHome, "app-server-control", "app-server-control.sock");
-  const appServerAvailable = await access(appServerSocket).then(() => true).catch(() => false);
+  const appServerSocketAvailable = process.platform !== "win32"
+    && await access(appServerSocket).then(() => true).catch(() => false);
+  const appServerCommand = await probeAppServerCommand({ command: config.codexCommand });
+  const transportMode = config.interactions.transport;
+  const appServerAvailable = transportMode === "socket"
+    ? appServerSocketAvailable
+    : transportMode === "stdio"
+      ? appServerCommand.available
+      : appServerSocketAvailable || appServerCommand.available;
+  const appServerDetail = appServerSocketAvailable && transportMode !== "stdio"
+    ? "Managed Codex App Server socket is available"
+    : appServerCommand.available && transportMode !== "socket"
+      ? "Managed Codex App Server stdio transport is available"
+      : transportMode === "socket"
+        ? "Configured Codex App Server socket is unavailable"
+        : appServerCommand.reason || "No managed Codex App Server transport is available";
   const node = nodeRuntimeStatus();
   const stableRoot = expectedStablePluginRoot({ currentRoot: ROOT, homeDir: os.homedir() });
   const serviceDefinition = serviceDefinitionStatus({ service: daemon, expectedRoot: stableRoot });
@@ -112,7 +130,7 @@ async function doctor() {
     { ok: serviceDefinition.known, text: serviceDefinition.known ? "Service definition includes versioned runtime metadata" : "Service definition is legacy and should be reinstalled" },
     { ok: serviceDefinition.rootMatches, text: serviceDefinition.rootMatches ? "Service starts from this stable plugin checkout" : `Service does not start from stable plugin source ${stableRoot}` },
     { ok: serviceDefinition.runtimeMatches, text: serviceDefinition.runtimeMatches ? "Service runtime matches this verified Node executable" : "Service runtime differs from the current verified Node executable" },
-    { ok: appServerAvailable, text: appServerAvailable ? "Managed Codex App Server socket found" : "Managed Codex App Server socket not found; sessions remain view-only" },
+    { ok: appServerAvailable, text: appServerAvailable ? appServerDetail : `${appServerDetail}; sessions remain view-only` },
     { ok: deviceCounts.revoked <= 20, text: `${deviceCounts.active} active device(s), ${deviceCounts.revoked} retained revoked record(s)` },
   ];
   process.stdout.write(`Phone Control doctor\n\n`);
@@ -126,7 +144,8 @@ async function doctor() {
   process.stdout.write(`Rollout files found: ${rolloutCount}\n`);
   process.stdout.write(`Dashboard: http://127.0.0.1:${config.port}\n`);
   process.stdout.write(`Phone approvals: ${config.approvals.enabled ? "ENABLED" : "disabled (safe default)"}\n`);
-  process.stdout.write(`Phone interactions: ${config.interactions.enabled ? "enabled" : "disabled"}; managed app-server socket ${appServerAvailable ? "found" : "not found"}\n`);
+  process.stdout.write(`Phone interactions: ${config.interactions.enabled ? "enabled" : "disabled"}; app-server transport ${transportMode}\n`);
+  process.stdout.write(`Codex command: ${config.codexCommand}\n`);
   process.stdout.write(`Background service: ${daemon.installed ? (daemon.active ? "active" : "installed, inactive") : "not installed"}\n`);
   if (daemon.definition) {
     process.stdout.write(`Service runtime: ${daemon.definition.runtime}\n`);

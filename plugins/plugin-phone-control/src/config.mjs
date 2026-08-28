@@ -7,6 +7,7 @@ import { safeJsonParse } from "./utils.mjs";
 const DEFAULT_PORT = 8787;
 const DEFAULT_RETENTION_DAYS = 14;
 const DEFAULT_MAX_EVENT_LOG_BYTES = 8 * 1024 * 1024;
+const APP_SERVER_TRANSPORTS = new Set(["auto", "socket", "stdio"]);
 
 function validPort(value, fallback = DEFAULT_PORT) {
   const port = Number(value);
@@ -23,9 +24,19 @@ function envBoolean(value, fallback = false) {
   return ["1", "true", "yes", "on"].includes(String(value).toLowerCase());
 }
 
+function validCodexCommand(value, fallback = "codex") {
+  const command = typeof value === "string" ? value.trim() : "";
+  return command && command.length <= 4_096 && !/[\r\n\0]/.test(command) ? command : fallback;
+}
+
+function validAppServerTransport(value, fallback = "auto") {
+  const transport = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return APP_SERVER_TRANSPORTS.has(transport) ? transport : fallback;
+}
+
 function storedConfig(config) {
   return {
-    version: 3,
+    version: 4,
     host: config.host,
     port: config.port,
     token: config.token,
@@ -34,12 +45,14 @@ function storedConfig(config) {
     secureCookies: config.secureCookies,
     retentionDays: config.retentionDays,
     maxEventLogBytes: config.maxEventLogBytes,
+    codexCommand: config.codexCommand,
     approvals: {
       enabled: Boolean(config.approvals?.enabled),
       timeoutSeconds: config.approvals?.timeoutSeconds,
     },
     interactions: {
       enabled: Boolean(config.interactions?.enabled),
+      transport: validAppServerTransport(config.interactions?.transport),
     },
   };
 }
@@ -65,7 +78,7 @@ export async function loadConfig({ environment = process.env, create = true } = 
   if (!stored && create) {
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
     const seed = {
-      version: 3,
+      version: 4,
       host: environment.PHONE_CONTROL_HOST || "127.0.0.1",
       port: validPort(environment.PHONE_CONTROL_PORT),
       token: environment.PHONE_CONTROL_TOKEN || randomBytes(32).toString("base64url"),
@@ -74,12 +87,14 @@ export async function loadConfig({ environment = process.env, create = true } = 
       secureCookies: envBoolean(environment.PHONE_CONTROL_SECURE_COOKIES),
       retentionDays: validInteger(environment.PHONE_CONTROL_RETENTION_DAYS, DEFAULT_RETENTION_DAYS, { min: 1, max: 365 }),
       maxEventLogBytes: validInteger(environment.PHONE_CONTROL_MAX_EVENT_LOG_BYTES, DEFAULT_MAX_EVENT_LOG_BYTES, { min: 1024 * 1024 }),
+      codexCommand: validCodexCommand(environment.PHONE_CONTROL_CODEX_COMMAND),
       approvals: {
         enabled: envBoolean(environment.PHONE_CONTROL_APPROVALS_ENABLED),
         timeoutSeconds: validInteger(environment.PHONE_CONTROL_APPROVAL_TIMEOUT_SECONDS, 45, { min: 10, max: 55 }),
       },
       interactions: {
         enabled: envBoolean(environment.PHONE_CONTROL_INTERACTIONS_ENABLED, true),
+        transport: validAppServerTransport(environment.PHONE_CONTROL_APP_SERVER_TRANSPORT),
       },
     };
     try {
@@ -92,7 +107,7 @@ export async function loadConfig({ environment = process.env, create = true } = 
   }
 
   const config = {
-    version: 3,
+    version: 4,
     host: environment.PHONE_CONTROL_HOST || stored?.host || "127.0.0.1",
     port: validPort(environment.PHONE_CONTROL_PORT ?? stored?.port),
     token: environment.PHONE_CONTROL_TOKEN || stored?.token || randomBytes(32).toString("base64url"),
@@ -101,6 +116,7 @@ export async function loadConfig({ environment = process.env, create = true } = 
     secureCookies: envBoolean(environment.PHONE_CONTROL_SECURE_COOKIES, stored?.secureCookies || false),
     retentionDays: validInteger(environment.PHONE_CONTROL_RETENTION_DAYS ?? stored?.retentionDays, DEFAULT_RETENTION_DAYS, { min: 1, max: 365 }),
     maxEventLogBytes: validInteger(environment.PHONE_CONTROL_MAX_EVENT_LOG_BYTES ?? stored?.maxEventLogBytes, DEFAULT_MAX_EVENT_LOG_BYTES, { min: 1024 * 1024 }),
+    codexCommand: validCodexCommand(environment.PHONE_CONTROL_CODEX_COMMAND ?? stored?.codexCommand),
     approvals: {
       enabled: envBoolean(environment.PHONE_CONTROL_APPROVALS_ENABLED, stored?.approvals?.enabled || false),
       timeoutSeconds: validInteger(
@@ -113,6 +129,9 @@ export async function loadConfig({ environment = process.env, create = true } = 
       enabled: envBoolean(
         environment.PHONE_CONTROL_INTERACTIONS_ENABLED,
         stored?.interactions?.enabled ?? true,
+      ),
+      transport: validAppServerTransport(
+        environment.PHONE_CONTROL_APP_SERVER_TRANSPORT ?? stored?.interactions?.transport,
       ),
     },
     dataDir,

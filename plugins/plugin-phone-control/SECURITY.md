@@ -5,7 +5,7 @@ Phone Control 可以展示本机 Codex 会话、工作目录、工具名称和�
 
 ## 支持版本与漏洞报告
 
-当前仅维护最新的 `0.7.x` 版本。旧版本收到安全修复时应升级到最新发布版。
+当前仅维护最新的 `0.8.x` 版本。旧版本收到安全修复时应升级到最新发布版。
 
 请不要通过公开 Issue 报告漏洞。使用 GitHub 的
 [私密安全公告](https://github.com/under-stand/phone-control/security/advisories/new)，说明受影响版本、

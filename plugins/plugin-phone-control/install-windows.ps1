@@ -112,6 +112,8 @@ if (-not $pluginCliReady) {
 if (-not $codex) { throw 'Codex was installed but codex.exe is not visible. Open a new PowerShell window and retry.' }
 & $codex plugin --help *> $null
 if ($LASTEXITCODE -ne 0) { throw 'This Codex build does not support plugins. Update Codex, then run this installer again.' }
+& $codex app-server --help *> $null
+if ($LASTEXITCODE -ne 0) { throw 'This Codex build does not provide app-server. Update Codex, then run this installer again.' }
 
 $sourceRoot = Join-Path $InstallRoot 'source'
 $pluginRoot = Join-Path $sourceRoot 'plugins\plugin-phone-control'
@@ -195,7 +197,13 @@ if ($publicUrl) {
   $env:PHONE_CONTROL_SECURE_COOKIES = '1'
 }
 $entry = Join-Path $pluginRoot 'bin\phone-control.mjs'
-Invoke-Native $node @($entry, 'service', 'install', '--runtime', $node) 'Could not install the Phone Control background task'
+Invoke-Native $node @(
+  $entry,
+  'service', 'install',
+  '--runtime', $node,
+  '--codex-command', $codex,
+  '--app-server-transport', 'auto'
+) 'Could not install the Phone Control background task'
 
 $healthy = $false
 for ($attempt = 0; $attempt -lt 20; $attempt += 1) {
@@ -220,4 +228,5 @@ if ($publicUrl) { Write-Host "Private phone access: $publicUrl" -ForegroundColor
 else { Write-Host 'Dashboard: http://127.0.0.1:8787 (computer only until Tailscale or an HTTPS relay is configured)' -ForegroundColor Yellow }
 Write-Host ''
 Write-Host 'Next: fully quit and reopen Codex, create a new thread, and review /hooks.' -ForegroundColor Yellow
-Write-Host 'Native Windows can track tasks and show notifications. Live continue/stop/create currently requires Codex and Phone Control inside the same WSL2 distro.'
+Write-Host 'Native Windows uses a managed local Codex App Server for create, continue, and stop controls.'
+Write-Host 'A turn already active in another Codex App process remains observe-only until it becomes safely resumable.'

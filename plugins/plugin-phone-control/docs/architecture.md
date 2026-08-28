@@ -7,7 +7,7 @@ Codex Desktop / IDE / CLI
   ├─ passive lifecycle hooks ───┐
   ├─ sync PermissionRequest ────┤
   ├─ ~/.codex/sessions/*.jsonl ─┤
-  └─ managed app-server WS ─────┤
+  └─ App Server socket / stdio ─┤
                                 ▼
                     Phone Control sidecar
                     ├─ normalized state
@@ -106,9 +106,13 @@ turn 中已经存在 `phone_input_sent` 所有权标记的事件生成短期、�
 立即退出 Hook，保留 Codex 原有审批通道。手机决定后 Hook 只返回本次 allow/deny，超时或断线时
 不返回 decision。
 
-交互回答走另一条严格绑定的路径。sidecar 只连接
-`~/.codex/app-server-control/app-server-control.sock` 的本机 Unix WebSocket，完成 JSON-RPC
-`initialize`，再通过 `thread/loaded/list` 标记现场 thread。只有 app-server 直接发来的
+交互回答走另一条严格绑定的路径。sidecar 通过跨平台 Transport 完成 JSON-RPC `initialize`：
+Linux 与 macOS 的 `auto` 模式优先连接 `~/.codex/app-server-control/app-server-control.sock`
+本机 Unix WebSocket，连接不可用时启动自己管理的 `codex app-server --listen stdio://`；原生
+Windows 直接使用受管 stdio 子进程。也可以显式选择 `socket` 或 `stdio`。Phone Control 不依赖
+实验性的 TCP WebSocket 端口，子进程 stdin 关闭后会获得短暂退出窗口，随后才强制终止。
+
+初始化后通过 `thread/loaded/list` 标记现场 thread。只有 app-server 直接发来的
 `item/tool/requestUserInput` 才会生成手机表单；响应使用原 JSON-RPC request id，并在服务端
 再次核对 thread 和 turn。rollout 或 Hook 中发现的历史问题不会获得可回答能力。
 
@@ -138,7 +142,7 @@ thread；该 thread 会在当前进程内熔断，其他 thread 在重连后继�
 
 因此交互能力必须满足以下条件后才能启用：
 
-1. 找到明确的 app-server 或 Codex App control endpoint；
+1. 连接现有 Unix Socket，或启动并拥有一个本机 stdio App Server；
 2. 完成 JSON-RPC `initialize`；
 3. 用 metadata-only `thread/resume` 建立订阅并读取 runtime status 与最新 turn identity；
 4. 记录 endpoint、thread、活动 turn 和 active flags 的绑定关系；
@@ -237,10 +241,12 @@ Relay service 使用独立的 systemd unit 或 `phone-control-relay` tmux sessio
 配置默认 standby；`relay activate` 只有在 client config、后台服务、本机健康与公网 HTTPS 四项
 诊断都通过后才保存新的 `publicUrl`，`relay deactivate` 恢复配置时记录的旧入口。
 
-后台服务定义记录明确的 Node 与插件 entry 元数据。`service install` 先用当前 Node 执行目标入口的
+后台服务由 Linux user systemd、macOS user launchd、Windows 当前用户计划任务或 Unix
+`tmux + cron` 承载。定义记录明确的 Node 与插件 entry 元数据，私有配置另行保存 Codex 可执行文件和 Transport
+偏好。`service install` 先用当前 Node 执行目标入口的
 `--help` 预检，再原子替换 systemd unit 或 tmux launcher，并主动重启现有服务；因此 Node 或插件
-安装根升级后不会继续静默运行旧工作区。`doctor` 将 Node 22+、稳定个人插件根、服务定义、App
-Server socket 与设备记录作为分层检查输出。
+安装根升级后不会继续静默运行旧工作区。`doctor` 将 Node 22+、稳定个人插件根、服务定义、Unix
+Socket/stdio App Server 与设备记录作为分层检查输出。
 
 设备凭证只对 active 记录执行 50 台上限。撤销记录按时间最多保留 20 条，超过上限时自动删除最旧
 记录；手机端默认只展开 active 设备，用户也可以清理全部撤销历史。生产源代码的格式化工具已从

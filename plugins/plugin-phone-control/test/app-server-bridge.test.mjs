@@ -187,6 +187,37 @@ function transportHarness({
 
 export const tests = [
   {
+    name: "passes cross-platform transport settings into the App Server connection",
+    async run() {
+      const harness = transportHarness({ loadedThreads: [] });
+      let options = null;
+      const bridge = new CodexAppServerBridge({
+        socketPath: "C:\\Users\\Me\\.codex\\app-server.sock",
+        codexCommand: "C:\\Users\\Me\\AppData\\Roaming\\npm\\codex.cmd",
+        transportMode: "stdio",
+        platform: "win32",
+        transportFactory: async (received) => {
+          options = received;
+          return { ...(await harness.transportFactory()), kind: "managed-stdio" };
+        },
+        reconnect: false,
+        loadedThreadRefreshMs: 0,
+      });
+      try {
+        assert.equal(await bridge.start(), true);
+        assert.deepEqual(options, {
+          socketPath: "C:\\Users\\Me\\.codex\\app-server.sock",
+          command: "C:\\Users\\Me\\AppData\\Roaming\\npm\\codex.cmd",
+          mode: "stdio",
+          platform: "win32",
+        });
+        assert.equal(bridge.status().transport, "managed-stdio");
+      } finally {
+        await bridge.close();
+      }
+    },
+  },
+  {
     name: "initializes a quiet bridge and resumes only metadata plus the latest turn identity",
     async run() {
       const harness = transportHarness({
@@ -206,7 +237,7 @@ export const tests = [
       try {
         assert.equal(await bridge.start(), true);
         const initialize = harness.sent.find((message) => message.method === "initialize");
-        assert.equal(initialize.params.clientInfo.version, "0.7.1");
+        assert.equal(initialize.params.clientInfo.version, "0.8.0");
         assert.equal(initialize.params.capabilities.experimentalApi, true);
         assert.ok(initialize.params.capabilities.optOutNotificationMethods.includes("item/agentMessage/delta"));
         assert.ok(initialize.params.capabilities.optOutNotificationMethods.includes("item/completed"));
