@@ -1,0 +1,27 @@
+worker_processes 1;
+pid logs/nginx.pid;
+error_log logs/nginx-error.log warn;
+
+events {
+    worker_connections 256;
+}
+
+http {
+    access_log off;
+    server_tokens off;
+
+    server {
+        listen 80;
+        listen [::]:80;
+        server_name 203.0.113.10;
+
+        location ^~ /.well-known/acme-challenge/ {
+            root /opt/phone-control-relay/acme-webroot;
+            default_type text/plain;
+        }
+
+        location / {
+            return 404;
+        }
+    }
+}

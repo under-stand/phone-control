@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+CERTBOT=/opt/phone-control-relay/certbot/venv/bin/certbot
+CONFIG_DIR=/opt/phone-control-relay/certbot/config
+WORK_DIR=/opt/phone-control-relay/certbot/work
+LOGS_DIR=/opt/phone-control-relay/certbot/logs
+
+while true; do
+  "$CERTBOT" renew \
+    --config-dir "$CONFIG_DIR" \
+    --work-dir "$WORK_DIR" \
+    --logs-dir "$LOGS_DIR" \
+    --deploy-hook "/usr/sbin/nginx -p /opt/phone-control-relay/nginx/ -c conf/nginx.conf -s reload"
+  sleep 43200
+done

@@ -1,0 +1,105 @@
+{
+  "description": "Report passive Codex lifecycle events to the local Phone Control sidecar.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"${PLUGIN_DATA}/hook-runtime/scripts/hook.mjs\" ]; then node \"${PLUGIN_DATA}/hook-runtime/scripts/hook.mjs\"; else node \"${PLUGIN_ROOT}/scripts/hook.mjs\"; fi",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"${PLUGIN_DATA}/hook-runtime/scripts/hook.mjs\" ]; then node \"${PLUGIN_DATA}/hook-runtime/scripts/hook.mjs\"; else node \"${PLUGIN_ROOT}/scripts/hook.mjs\"; fi",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"${PLUGIN_DATA}/hook-runtime/scripts/hook.mjs\" ]; then node \"${PLUGIN_DATA}/hook-runtime/scripts/hook.mjs\"; else node \"${PLUGIN_ROOT}/scripts/hook.mjs\"; fi",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"${PLUGIN_DATA}/hook-runtime/scripts/hook.mjs\" ]; then node \"${PLUGIN_DATA}/hook-runtime/scripts/hook.mjs\"; else node \"${PLUGIN_ROOT}/scripts/hook.mjs\"; fi",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"${PLUGIN_DATA}/hook-runtime/scripts/hook.mjs\" ]; then node \"${PLUGIN_DATA}/hook-runtime/scripts/hook.mjs\"; else node \"${PLUGIN_ROOT}/scripts/hook.mjs\"; fi",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"${PLUGIN_DATA}/hook-runtime/scripts/permission-hook.mjs\" ]; then node \"${PLUGIN_DATA}/hook-runtime/scripts/permission-hook.mjs\"; else node \"${PLUGIN_ROOT}/scripts/permission-hook.mjs\"; fi",
+            "timeout": 55
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"${PLUGIN_DATA}/hook-runtime/scripts/hook.mjs\" ]; then node \"${PLUGIN_DATA}/hook-runtime/scripts/hook.mjs\"; else node \"${PLUGIN_ROOT}/scripts/hook.mjs\"; fi",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"${PLUGIN_DATA}/hook-runtime/scripts/hook.mjs\" ]; then node \"${PLUGIN_DATA}/hook-runtime/scripts/hook.mjs\"; else node \"${PLUGIN_ROOT}/scripts/hook.mjs\"; fi",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"${PLUGIN_DATA}/hook-runtime/scripts/hook.mjs\" ]; then node \"${PLUGIN_DATA}/hook-runtime/scripts/hook.mjs\"; else node \"${PLUGIN_ROOT}/scripts/hook.mjs\"; fi",
+            "timeout": 1
+          }
+        ]
+      }
+    ]
+  }
+}

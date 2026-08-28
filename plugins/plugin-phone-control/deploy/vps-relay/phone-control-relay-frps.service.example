@@ -1,0 +1,16 @@
+[Unit]
+Description=Phone Control isolated FRP relay server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/phone-control-relay
+ExecStart=/opt/phone-control-relay/bin/frps -c /opt/phone-control-relay/config/frps.toml
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

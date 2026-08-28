@@ -1,0 +1,20 @@
+{
+  "name": "phone-control",
+  "interface": {
+    "displayName": "Phone Control"
+  },
+  "plugins": [
+    {
+      "name": "plugin-phone-control",
+      "source": {
+        "source": "local",
+        "path": "./plugins/plugin-phone-control"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#f5f3ed">
+    <meta name="description" content="在手机上实时追踪本机 Codex Desktop 和 CLI 任务。">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css?v=54">
+    <title>Phone Control</title>
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+    <main class="shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Phone Control">
+          <span class="brand-mark"><i></i><i></i><i></i></span>
+          <span><strong>Phone Control</strong><small>LOCAL AGENT SIGNAL</small></span>
+        </a>
+        <div class="top-actions">
+          <button class="device-button" id="status-button" type="button" aria-label="查看运行状态">状态</button>
+          <button class="device-button" id="devices-button" type="button" aria-label="管理设备">设备</button>
+          <button class="connection" id="connection" data-state="connecting" type="button" aria-label="立即检查并连接机器" title="点按立即检查连接">
+            <span></span><b>连接中</b>
+          </button>
+        </div>
+      </header>
+
+      <section class="target-tracker" id="target-tracker" data-status="unknown" aria-label="目标会话追踪" hidden>
+        <button class="target-open" id="target-open" type="button">
+          <span class="target-indicator" aria-hidden="true"></span>
+          <span class="target-copy">
+            <small id="target-context">目标会话</small>
+            <strong id="target-title">正在读取会话</strong>
+            <span id="target-progress">等待状态同步</span>
+          </span>
+          <span class="target-state" id="target-state">状态未知</span>
+        </button>
+        <button class="target-clear" id="target-clear" type="button" aria-label="取消追踪目标会话">×</button>
+      </section>
+
+      <section class="task-section" aria-labelledby="task-title">
+        <div class="section-head">
+          <div class="section-title">
+            <h1 id="task-title">任务</h1>
+            <p class="sync-summary" id="sync-summary" role="status" aria-live="polite">正在同步会话</p>
+          </div>
+          <div class="section-actions">
+            <button class="new-session-button" id="new-session-button" type="button">新建</button>
+            <button class="icon-button" id="notify" type="button" title="开启离线通知和提示音" aria-label="开启离线通知和提示音" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
+              <span id="notify-label">提醒</span>
+            </button>
+          </div>
+        </div>
+        <form class="task-search" id="task-search" role="search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg>
+          <label class="sr-only" for="task-search-input">搜索任务</label>
+          <input id="task-search-input" type="search" maxlength="160" autocomplete="off" enterkeyhint="search" placeholder="搜索任务、项目或回复">
+          <button id="task-search-clear" type="button" aria-label="清除任务搜索" hidden>清除</button>
+        </form>
+        <p class="task-search-summary" id="task-search-summary" role="status" aria-live="polite" hidden></p>
+        <nav class="filters" aria-label="任务筛选">
+          <button class="active" data-filter="recent">最近 <span id="count-recent">0</span></button>
+          <button data-filter="attention">待处理 <span id="count-attention">0</span></button>
+          <button data-filter="active">当前 <span id="count-active">0</span></button>
+          <button data-filter="history">历史 <span id="count-history">0</span></button>
+          <button data-filter="all">全部 <span id="count-all">0</span></button>
+        </nav>
+        <div class="task-groups" id="task-list"></div>
+        <div class="empty" id="empty" hidden>
+          <span class="empty-orbit"><i></i></span>
+          <h3 id="empty-title">还没有捕获到任务</h3>
+          <p id="empty-copy">启动一个 Codex Desktop 或 CLI 会话；安装后的 Hooks 会自动把状态送到这里。</p>
+        </div>
+      </section>
+    </main>
+
+    <dialog class="detail" id="detail">
+      <div class="detail-sheet">
+        <button class="detail-close" id="detail-close" aria-label="关闭"><img src="/icons/x.svg" alt=""></button>
+        <div class="detail-header" id="detail-header"></div>
+        <div class="detail-scroll" id="detail-content"></div>
+        <div class="detail-actions" id="detail-actions"></div>
+      </div>
+    </dialog>
+
+    <dialog class="devices-dialog status-dialog" id="status-dialog">
+      <div class="devices-sheet status-sheet">
+        <button class="detail-close" id="status-close" aria-label="关闭"><img src="/icons/x.svg" alt=""></button>
+        <div class="status-title-row">
+          <div><p class="eyebrow">状态</p><h2>运行状态</h2></div>
+          <button class="status-refresh" id="status-refresh" type="button">刷新</button>
+        </div>
+        <p class="devices-copy">查看连接、当前会话和额度；诊断信息默认收起。</p>
+        <div id="status-content"><p class="detail-empty">正在读取状态…</p></div>
+      </div>
+    </dialog>
+
+    <dialog class="devices-dialog" id="devices-dialog">
+      <div class="devices-sheet">
+        <button class="detail-close" id="devices-close" aria-label="关闭"><img src="/icons/x.svg" alt=""></button>
+        <p class="eyebrow">PAIRED DEVICES</p>
+        <h2>设备与配对</h2>
+        <p class="devices-copy">每台设备都有独立凭证，丢失后可以单独撤销。新链接十分钟后过期且只能使用一次。</p>
+        <button class="primary-action" id="new-pairing" type="button">生成一次性配对链接</button>
+        <div class="pairing-link" id="pairing-link" hidden>
+          <input id="pairing-link-value" readonly aria-label="一次性配对链接">
+          <button id="copy-pairing" type="button">复制</button>
+        </div>
+        <div class="device-list" id="device-list"></div>
+      </div>
+    </dialog>
+
+    <dialog class="devices-dialog new-session-dialog" id="new-session-dialog">
+      <form class="devices-sheet new-session-sheet" id="new-session-form">
+        <button class="detail-close" id="new-session-close" type="button" aria-label="关闭"><img src="/icons/x.svg" alt=""></button>
+        <p class="eyebrow">NEW CODEX SESSION</p>
+        <h2>新建会话</h2>
+        <p class="devices-copy">创建一个独立的 Codex 会话，并立即发送第一条任务指令。</p>
+        <label class="form-field">第一条指令
+          <textarea id="new-session-input" maxlength="4000" rows="4" placeholder="告诉 Codex 要完成什么…" required></textarea>
+        </label>
+        <section class="session-setup-card workspace-setup" aria-labelledby="workspace-setup-title">
+          <div class="setup-heading">
+            <div><small>运行位置</small><h3 id="workspace-setup-title">选择这个任务所在的项目</h3></div>
+            <span class="machine-badge" id="new-session-machine">当前电脑</span>
+          </div>
+          <div class="workspace-choices" id="new-session-workspaces" role="radiogroup" aria-label="最近工作目录"></div>
+          <details class="custom-workspace" id="new-session-custom-workspace">
+            <summary>输入其他路径</summary>
+            <label>这台电脑上的绝对路径
+              <input id="new-session-cwd" list="workspace-options" maxlength="4096" placeholder="/workspace/my-project" autocomplete="off">
+            </label>
+          </details>
+          <datalist id="workspace-options"></datalist>
+          <p class="setup-note" id="new-session-workspace-hint">路径只在当前连接的电脑上生效。</p>
+        </section>
+        <details class="session-setup-card runtime-setup" id="new-session-runtime">
+          <summary class="setup-heading">
+            <span><small>运行配置</small><h3 id="runtime-setup-title">模型与推理强度</h3></span>
+            <b id="new-session-runtime-summary">跟随本机默认</b>
+          </summary>
+          <div class="runtime-setup-body" aria-labelledby="runtime-setup-title">
+            <button class="setup-reset" id="new-session-config-reset" type="button">恢复默认</button>
+            <label class="model-choice">模型
+              <span class="select-shell"><select id="new-session-model"><option value="">跟随 Codex 默认</option></select><img src="/icons/caret-down.svg" alt=""></span>
+              <small id="new-session-model-description">正在读取本机可用模型…</small>
+            </label>
+            <div class="effort-choice">
+              <div><b>推理等级</b><small id="new-session-effort-hint">选择模型后显示可用等级</small></div>
+              <div class="effort-pills" id="new-session-efforts" role="radiogroup" aria-label="推理等级"></div>
+              <input id="new-session-effort" type="hidden" value="">
+            </div>
+            <label class="fast-switch" id="new-session-fast-row">
+              <span><b>Fast</b><small id="new-session-fast-hint">正在检查当前模型是否支持</small></span>
+              <input id="new-session-fast" type="checkbox" disabled><i aria-hidden="true"></i>
+            </label>
+            <p class="setup-note" id="new-session-model-hint">权限和沙箱仍沿用本机 Codex 配置。</p>
+          </div>
+        </details>
+        <footer class="new-session-submit-bar">
+          <div><small>即将在当前电脑开始</small><b id="new-session-submit-summary">选择项目 · 本机默认</b></div>
+          <button class="primary-action" id="new-session-submit" type="submit">创建并开始</button>
+          <small class="form-error" id="new-session-error" role="alert"></small>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog class="runtime-settings-dialog" id="runtime-settings-dialog" aria-labelledby="runtime-settings-title">
+      <section class="composer-runtime-sheet" id="runtime-settings-content"></section>
+    </dialog>
+
+    <div class="pairing" id="pairing" hidden>
+      <form class="pairing-card" id="pairing-form">
+        <span class="pairing-icon">⌁</span>
+        <p class="eyebrow">PRIVATE PAIRING</p>
+        <h2>连接你的电脑</h2>
+        <p>输入启动服务时显示的访问口令。口令只会保存在此设备的 HttpOnly Cookie 中。</p>
+        <label>访问口令<input id="pairing-token" type="password" autocomplete="current-password" required></label>
+        <button type="submit">安全连接</button>
+        <small id="pairing-error" role="alert"></small>
+      </form>
+    </div>
+
+    <div class="toast" id="toast" role="status" hidden></div>
+    <button class="signal-toast" id="signal-toast" type="button" popover="manual">
+      <span class="signal-toast-mark">✓</span>
+      <span aria-live="polite"><b id="signal-toast-title">任务已完成</b><small id="signal-toast-body">点按查看最新结果</small></span>
+    </button>
+    <script src="/app.js?v=54" type="module"></script>
+  </body>
+</html>

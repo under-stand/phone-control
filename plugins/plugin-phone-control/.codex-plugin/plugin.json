@@ -1,0 +1,34 @@
+{
+  "name": "plugin-phone-control",
+  "version": "0.6.0",
+  "description": "Track, answer, continue, and receive private alerts for Codex sessions from mobile.",
+  "author": {
+    "name": "Phone Control contributors"
+  },
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "mobile",
+    "monitoring",
+    "hooks",
+    "local-first"
+  ],
+  "interface": {
+    "displayName": "Phone Control",
+    "shortDescription": "Follow local Codex work from your phone.",
+    "longDescription": "A local-first task dashboard for Codex Desktop and CLI sessions. Receive opt-in Web Push alerts, view minimized status, answer request_user_input, send sanitized images, create or permanently delete threads with safeguards, safely resume stored threads, steer verified active turns, and interrupt the exact active turn from a paired phone.",
+    "developerName": "Phone Control contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Show me how to start the Phone Control dashboard.",
+      "Check whether Phone Control can see this Codex session.",
+      "Explain the Phone Control security model."
+    ],
+    "brandColor": "#6857F5"
+  }
+}

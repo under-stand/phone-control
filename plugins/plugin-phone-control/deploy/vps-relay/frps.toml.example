@@ -1,0 +1,22 @@
+bindAddr = "0.0.0.0"
+bindPort = 27070
+proxyBindAddr = "127.0.0.1"
+
+auth.method = "token"
+auth.tokenSource.type = "file"
+auth.tokenSource.file.path = "/opt/phone-control-relay/secrets/frp-token"
+
+transport.tls.force = true
+transport.tcpMuxKeepaliveInterval = 15
+# Give mobile SSE and slower cross-border links enough room for delayed heartbeats.
+transport.heartbeatTimeout = 120
+
+allowPorts = [
+  { single = 27878 },
+]
+maxPortsPerClient = 1
+detailedErrorsToClient = false
+
+log.to = "/opt/phone-control-relay/logs/frps.log"
+log.level = "info"
+log.maxDays = 7

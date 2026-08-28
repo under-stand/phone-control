@@ -1,0 +1,16 @@
+[Unit]
+Description=Renew the Phone Control short-lived IP certificate
+After=network-online.target phone-control-relay-edge.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/phone-control-relay/bin/renew-cert.sh
+Restart=always
+RestartSec=30
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

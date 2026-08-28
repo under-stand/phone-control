@@ -1,0 +1,45 @@
+{
+  "name": "plugin-phone-control",
+  "version": "0.6.0",
+  "description": "Local-first mobile task dashboard for Codex Desktop and CLI.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "phone-control": "./bin/phone-control.mjs"
+  },
+  "scripts": {
+    "start": "node ./bin/phone-control.mjs start",
+    "doctor": "node ./bin/phone-control.mjs doctor",
+    "smoke:approval": "node ./scripts/smoke-approval.mjs",
+    "smoke:approval:protocol": "node ./scripts/smoke-approval.mjs",
+    "smoke:status": "node ./scripts/smoke-status.mjs",
+    "smoke:stream": "node ./scripts/smoke-stream.mjs",
+    "smoke:performance": "node ./scripts/smoke-performance.mjs",
+    "smoke:question": "node ./scripts/smoke-question.mjs",
+    "smoke:control": "node ./scripts/smoke-control.mjs",
+    "check": "node ./scripts/check-source.mjs",
+    "test": "node ./scripts/run-tests.mjs",
+    "test:mobile": "node ./scripts/mobile-regression.mjs",
+    "verify": "npm run check && npm test"
+  },
+  "dependencies": {
+    "qrcode": "1.5.4",
+    "web-push": "3.6.7"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/under-stand/phone-control.git",
+    "directory": "plugins/plugin-phone-control"
+  },
+  "homepage": "https://github.com/under-stand/phone-control#readme",
+  "bugs": {
+    "url": "https://github.com/under-stand/phone-control/issues"
+  },
+  "license": "MIT"
+}

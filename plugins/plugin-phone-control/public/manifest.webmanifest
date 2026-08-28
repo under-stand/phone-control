@@ -1,0 +1,17 @@
+{
+  "name": "Phone Control",
+  "short_name": "Phone Control",
+  "description": "Track and continue local Codex sessions from your phone.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f3ed",
+  "theme_color": "#f5f3ed",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
