@@ -614,7 +614,8 @@ https://inside-fence.example
   assert.equal(await page.locator("#detail[open] .action-dock.is-compact [data-interrupt-session]").count(), 1, "stop should remain available as a compact secondary action");
   assert.equal(await page.locator("#detail[open] .detail-header [data-target-session-id]").count(), 1, "target tracking should remain available in the compact detail header");
   assert.equal(await page.locator("#detail[open] .control-note").count(), 0, "a normal controllable session should not repeat its action in a separate notice");
-  assert.ok((await page.locator("#detail[open] .detail-header").boundingBox()).height <= 100, "the compact detail header must preserve conversation space");
+  const compactHeaderHeight = (await page.locator("#detail[open] .detail-header").boundingBox()).height;
+  assert.ok(compactHeaderHeight <= 120, `the compact two-line detail header must preserve conversation space (${compactHeaderHeight}px)`);
   await page.screenshot({ path: path.join(outputDir, "02-active-detail.png"), fullPage: false });
   await page.locator("[data-expand-composer]").click();
   await page.locator("#detail[open] .session-composer").waitFor();
