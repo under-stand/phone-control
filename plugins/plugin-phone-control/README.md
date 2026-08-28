@@ -27,6 +27,30 @@ Phone Control · 127.0.0.1:8787
 - 为一个目标会话开启完成提醒，在状态页查看类似 `/status` 的账户与运行摘要。
 - 安装为 PWA；数据、设备凭证、审计和事件记录都保留在自己的电脑上。
 
+## 平台与功能边界
+
+Phone Control 的“查看任务”和“控制任务”依赖不同能力。读取 Hooks 与 rollout 就能追踪进度；
+续聊、新建、中止、回答问题等完整控制还要求 Phone Control 能访问同一运行环境中的受管 Codex
+App Server。可运行 `phone-control doctor` 检查本机是否找到该控制通道。
+
+| 电脑端运行方式 | 电脑界面 | 追踪、通知、仪表盘 | 完整手机控制 | 当前状态 |
+| --- | --- | --- | --- | --- |
+| Linux 原生 | App、IDE 或 CLI | 支持 | App Server 可用时支持 | 主要验证环境 |
+| macOS | App、IDE 或 CLI | 支持 | App Server 可用时支持 | 支持手动安装，仍需更多真机验证 |
+| Windows 原生 | Windows App 或 CLI | 支持 | 暂不完整 | 一键安装器支持追踪模式 |
+| Windows App + WSL2 Agent | 仍然是 Windows App | 目标支持 | 尚未完成一键集成与真机验证 | 后续重点支持模式 |
+| WSL2 中的 Codex CLI | CLI | 支持 | 同一发行版内 App Server 可用时支持 | 当前可用的 Windows 完整控制路径 |
+
+WSL2 是 **Agent 的执行环境**，不是另一种界面。在 Windows Codex App 的设置中把 Agent
+切换到 WSL2 后，用户仍然使用桌面 App，只是命令、工具和 Linux 沙箱在 WSL2 内运行；只有在
+WSL2 终端中直接执行 `codex` 时才是 CLI。参见 OpenAI 官方的
+[Windows App 说明](https://learn.chatgpt.com/codex/windows/windows-app)与
+[WSL2 说明](https://learn.chatgpt.com/codex/windows/wsl)。
+
+目前 Windows 一键安装器只自动配置原生 Windows 追踪模式，不会自动安装或连接 WSL2 侧服务。
+需要成熟的完整控制时，先在同一个 WSL2 发行版中运行 Codex CLI 与 Phone Control；希望保留
+Windows App 界面时，可以等待后续专用的 App + WSL2 安装流程，或参与该模式的联调。
+
 ## 快速开始
 
 ### Windows 一键安装（推荐）
@@ -51,9 +75,9 @@ Control 后台任务本身以当前用户权限运行，不要求管理员权限
 
 安装完成后完全退出并重新打开 Codex，新建一个 thread，在 `/hooks` 中检查并信任当前 Hooks。
 
-原生 Windows 当前可以追踪 Desktop/CLI 历史、显示实时 Hook 状态、通知和手机仪表盘。由于 Codex
-原生 Windows App Server 尚未开放 Phone Control 使用的本地控制 socket，续聊、新建和中止等实时
-控制暂时需要把 Codex 与 Phone Control 都安装在同一个 WSL2 发行版中；安装器会在结束时再次提示。
+原生 Windows 当前可以追踪 App/CLI 历史、显示实时 Hook 状态、通知和手机仪表盘。完整控制的
+当前可用路径是让 Codex CLI 与 Phone Control 运行在同一个 WSL2 发行版；Windows App + WSL2
+Agent 的自动配置与真机验证尚未完成。两者区别见上方“平台与功能边界”。
 
 ### Linux、macOS 与 WSL2 手动安装
 
