@@ -83,6 +83,10 @@ irm https://raw.githubusercontent.com/under-stand/phone-control/main/plugins/plu
 并直接打印十分钟有效的一次性手机配对链接。安装依赖时 Windows 可能显示系统确认窗口；Phone
 Control 后台任务本身以当前用户权限运行，不要求管理员权限。
 
+安装器默认尝试使用回环端口 `8787`；如果该端口已被其他程序占用，会自动选择附近的空闲端口，
+并在输出的 Dashboard、Tailscale 入口和配对链接中使用同一个端口。需要固定端口时可传入
+`-Port 8787`；若固定端口已被占用，安装器会明确失败并提示换用其他端口。
+
 安装器把稳定源码放在 `%USERPROFILE%\.phone-control\source`，避免 Microsoft Store/AppX 应用中的
 `LOCALAPPDATA` 重定向导致计划任务找不到源码。后台启动器会在没有显式 `HTTP_PROXY`、
 `HTTPS_PROXY` 或 `ALL_PROXY` 时读取当前用户的 Windows 系统代理；Clash、Mihomo 等只写入系统

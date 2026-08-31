@@ -32,7 +32,10 @@ export const tests = [
         const manifest = JSON.parse(await readFile(result.manifestPath, "utf8"));
         assert.equal(manifest.plugins[0].source.path, "./plugins/plugin-phone-control");
         assert.equal(await realpath(path.join(marketplaceRoot, "plugins", "plugin-phone-control")), pluginRoot);
-        assert.equal(defaultMarketplaceRoot("/home/example"), "/home/example/.phone-control/marketplace");
+        assert.equal(
+          defaultMarketplaceRoot("/home/example"),
+          path.join("/home/example", ".phone-control", "marketplace"),
+        );
       } finally {
         await rm(temporaryRoot, { recursive: true, force: true });
       }

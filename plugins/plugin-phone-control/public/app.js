@@ -2088,9 +2088,15 @@ function attachmentMarkup(attachments = []) {
     </div>`).join("");
 }
 
+function isExternallyOwned(session) {
+  const reason = String(session.control?.reason || "");
+  return /another Codex runtime|active writer|observe-only/i.test(reason);
+}
+
 function controlChannelLabel(session) {
   if (sessionDisplayStatus(session) === "disconnected") return "连接已中断 · 只读";
   if (session.control?.handedOff) return "已移交电脑 · 手机只读";
+  if (isExternallyOwned(session)) return "电脑端占用 · 只读";
   if (session.control?.canAnswer) return "现场回答";
   if (session.control?.canApprove) return "单次审批";
   if (session.control?.action === "steer") return "可追加指令";
@@ -2108,6 +2114,7 @@ function controlExplanation(session) {
   if (session.control?.handedOff) return session.control?.canReclaim
     ? "电脑端结束当前任务并完全关闭这个会话后，可点“手机接管”。Phone Control 会先确认会话已空闲，再恢复手机输入。"
     : "Phone Control 已释放这个桌面应用会话的写入占用；历史仍会同步，手机保持只读，不会自动抢回控制权。";
+  if (isExternallyOwned(session)) return "这个会话仍由其他 Codex 客户端占用。请完全退出占用它的 Codex App/CLI 后，再点“手机接管”或恢复会话。";
   if (session.control?.canAnswer) return "这个问题已绑定到当前 Codex turn，回答后 Codex 会继续。";
   if (session.control?.canApprove) return "审批只对页面显示的这一次操作有效，过期后自动失效。";
   if (session.control?.action === "steer") return "手机指令会追加到当前正在执行的 turn；发送前会再次校验。";

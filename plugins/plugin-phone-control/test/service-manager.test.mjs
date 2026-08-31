@@ -26,6 +26,10 @@ const options = {
   runtime: "/opt/node 22/bin/node",
 };
 
+function portablePath(value) {
+  return String(value).replaceAll("\\", "/");
+}
+
 export const tests = [
   {
     name: "resolves exact tmux IDs so the main and relay sessions cannot alias",
@@ -40,9 +44,13 @@ export const tests = [
     name: "builds service definitions with explicit runtime and stable plugin metadata",
     async run() {
       for (const definition of [buildSystemdUnit(options), buildTmuxLauncher(options), buildWindowsLauncher(options), buildLaunchdPlist(options)]) {
-        assert.deepEqual(parseServiceMetadata(definition), {
-          runtime: options.runtime,
-          entry: "/opt/phone control/bin/phone-control.mjs",
+        const metadata = parseServiceMetadata(definition);
+        assert.deepEqual({
+          runtime: portablePath(metadata.runtime),
+          entry: portablePath(metadata.entry),
+        }, {
+          runtime: portablePath(options.runtime),
+          entry: portablePath(path.join(options.root, "bin", "phone-control.mjs")),
         });
         assert.match(definition, /127\.0\.0\.1/);
         assert.match(definition, /8787/);
@@ -57,17 +65,21 @@ export const tests = [
       assert.match(mac, /<key>KeepAlive<\/key>\s*<true\/>/);
       assert.match(mac, /<key>RunAtLoad<\/key>\s*<true\/>/);
       assert.match(mac, /\/opt\/node 22\/bin\/node/);
-      assert.match(mac, /\/opt\/phone control\/bin\/phone-control\.mjs/);
+      assert.match(portablePath(mac), /\/opt\/phone control\/bin\/phone-control\.mjs/);
       assert.equal(
-        launchdServicePath("/Users/me"),
+        portablePath(launchdServicePath("/Users/me")),
         "/Users/me/Library/LaunchAgents/com.phone-control.agent.plist",
       );
       const escapedOptions = { ...options, root: "/Applications/Phone & <Control>" };
       const escaped = buildLaunchdPlist(escapedOptions);
       assert.match(escaped, /Phone &amp; &lt;Control&gt;/);
-      assert.deepEqual(parseServiceMetadata(escaped), {
-        runtime: escapedOptions.runtime,
-        entry: "/Applications/Phone & <Control>/bin/phone-control.mjs",
+      const escapedMetadata = parseServiceMetadata(escaped);
+      assert.deepEqual({
+        runtime: portablePath(escapedMetadata.runtime),
+        entry: portablePath(escapedMetadata.entry),
+      }, {
+        runtime: portablePath(escapedOptions.runtime),
+        entry: portablePath(path.join(escapedOptions.root, "bin", "phone-control.mjs")),
       });
     },
   },
@@ -82,9 +94,10 @@ export const tests = [
         runtime: "C:\\Program Files\\nodejs\\node.exe",
       };
       const launcher = buildWindowsLauncher(windows);
-      assert.deepEqual(parseServiceMetadata(launcher), {
+      const metadata = parseServiceMetadata(launcher);
+      assert.deepEqual(metadata, {
         runtime: windows.runtime,
-        entry: "C:\\Users\\Me\\Phone Control\\repo/bin/phone-control.mjs",
+        entry: path.join(windows.root, "bin", "phone-control.mjs"),
       });
       assert.match(launcher, /while \(\$true\)/);
       assert.match(launcher, /4194304/);
@@ -126,13 +139,18 @@ export const tests = [
   {
     name: "accepts a stable repository checkout without trusting a versioned Codex cache root",
     async run() {
+      const homeDir = process.platform === "win32" ? "C:\\Users\\me" : "/home/me";
+      const stableRoot = process.platform === "win32"
+        ? "C:\\srv\\phone-control\\plugins\\plugin-phone-control"
+        : "/srv/phone-control/plugins/plugin-phone-control";
+      const cacheRoot = path.join(homeDir, ".codex", "plugins", "cache", "phone-control", "plugin-phone-control", "0.6.1");
       assert.equal(
-        expectedStablePluginRoot({ currentRoot: "/srv/phone-control/plugins/plugin-phone-control", homeDir: "/home/me" }),
-        "/srv/phone-control/plugins/plugin-phone-control",
+        portablePath(expectedStablePluginRoot({ currentRoot: stableRoot, homeDir: homeDir })),
+        portablePath(stableRoot),
       );
       assert.equal(
-        expectedStablePluginRoot({ currentRoot: "/home/me/.codex/plugins/cache/phone-control/plugin-phone-control/0.6.1", homeDir: "/home/me" }),
-        "/home/me/plugins/plugin-phone-control",
+        portablePath(expectedStablePluginRoot({ currentRoot: cacheRoot, homeDir: homeDir })),
+        portablePath(path.join(homeDir, "plugins", "plugin-phone-control")),
       );
     },
   },

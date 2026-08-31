@@ -3,6 +3,8 @@ param(
   [string]$InstallRoot = (Join-Path $env:USERPROFILE '.phone-control'),
   [ValidateSet('Auto', 'Local', 'Tailscale')]
   [string]$Access = 'Auto',
+  [ValidateRange(0, 65535)]
+  [int]$Port = 0,
   [switch]$SkipChecks
 )
 
@@ -12,6 +14,7 @@ $Repository = 'https://github.com/under-stand/phone-control.git'
 $MarketplaceName = 'phone-control'
 $PluginName = 'plugin-phone-control'
 $MinimumNodeMajor = 22
+$DefaultPort = 8787
 
 function Write-Step([string]$Message) {
   Write-Host "`n==> $Message" -ForegroundColor Cyan
@@ -57,6 +60,55 @@ function Get-NodeMajor([string]$NodePath) {
   $version = (& $NodePath --version 2>$null | Select-Object -First 1)
   if ($version -notmatch '^v?(\d+)') { return 0 }
   return [int]$Matches[1]
+}
+
+function Test-PortAvailable([int]$Candidate) {
+  $listener = $null
+  try {
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Candidate)
+    $listener.Start()
+    return $true
+  } catch {
+    return $false
+  } finally {
+    if ($listener) { $listener.Stop() }
+  }
+}
+
+function Get-StoredPort([string]$ConfigPath) {
+  if (-not (Test-Path -LiteralPath $ConfigPath)) { return $null }
+  try {
+    $stored = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+    $candidate = [int]$stored.port
+    if ($candidate -ge 1024 -and $candidate -le 65535) { return $candidate }
+  } catch {}
+  return $null
+}
+
+function Select-PhoneControlPort([int]$Requested, [string]$ConfigPath) {
+  $stored = Get-StoredPort $ConfigPath
+  $preferred = if ($Requested -gt 0) { $Requested } elseif ($stored) { $stored } else { $DefaultPort }
+
+  if ($Requested -eq 0 -and $stored -and -not (Test-PortAvailable $stored)) {
+    try {
+      $health = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/api/health" -f $stored) -TimeoutSec 2
+      if ($health.ok -and $health.ready -eq $true) { return $stored }
+    } catch {}
+  } elseif ($Requested -gt 0 -and -not (Test-PortAvailable $preferred)) {
+    throw "Requested Phone Control port $preferred is already in use. Choose another port with -Port."
+  }
+
+  for ($offset = 0; $offset -le 20; $offset += 1) {
+    $candidate = $preferred + $offset
+    if ($candidate -gt 65535) { break }
+    if (Test-PortAvailable $candidate) {
+      if ($candidate -ne $preferred) {
+        Write-Warning "Phone Control port $preferred is already in use; using available port $candidate instead."
+      }
+      return $candidate
+    }
+  }
+  throw "Could not find an available Phone Control port near $preferred. Choose another port with -Port."
 }
 
 function Install-WingetPackage([string]$Id, [string]$Label) {
@@ -172,6 +224,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $pluginRoot '.codex-plugin\plugin.js
   throw "The downloaded repository does not contain Phone Control: $pluginRoot"
 }
 
+$selectedPort = Select-PhoneControlPort $Port (Join-Path $InstallRoot 'config.json')
+
 Write-Step 'Installing service dependencies'
 Push-Location $pluginRoot
 try {
@@ -212,7 +266,7 @@ if ($Access -ne 'Local') {
         if ($dnsName) {
           Write-Step 'Enabling private Tailscale access'
           $global:LASTEXITCODE = 0
-          & $tailscale serve --bg 8787
+          & $tailscale serve --bg --yes $selectedPort
           if ($LASTEXITCODE -eq 0) { $publicUrl = 'https://' + $dnsName.TrimEnd('.') }
           elseif ($Access -eq 'Tailscale') { throw 'Tailscale Serve could not be enabled. Review the Tailscale message above.' }
           else { Write-Warning 'Tailscale was found, but Serve could not be enabled. The local dashboard will still be installed.' }
@@ -239,13 +293,14 @@ Invoke-Native $node @(
   'service', 'install',
   '--runtime', $node,
   '--codex-command', $codex,
-  '--app-server-transport', 'auto'
+  '--app-server-transport', 'auto',
+  '--port', $selectedPort
 ) 'Could not install the Phone Control background task'
 
 $healthy = $false
 for ($attempt = 0; $attempt -lt 20; $attempt += 1) {
   try {
-    $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8787/api/health' -TimeoutSec 2
+    $health = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/api/health" -f $selectedPort) -TimeoutSec 2
     if ($health.ok -and $health.ready -eq $true) { $healthy = $true; break }
   } catch {}
   Start-Sleep -Milliseconds 500
@@ -262,7 +317,7 @@ Write-Host ''
 Write-Host "Installed source: $sourceRoot"
 Write-Host 'Startup task: Phone Control (current user, no administrator rights)'
 if ($publicUrl) { Write-Host "Private phone access: $publicUrl" -ForegroundColor Green }
-else { Write-Host 'Dashboard: http://127.0.0.1:8787 (computer only until Tailscale or an HTTPS relay is configured)' -ForegroundColor Yellow }
+else { Write-Host ("Dashboard: http://127.0.0.1:{0} (computer only until Tailscale or an HTTPS relay is configured)" -f $selectedPort) -ForegroundColor Yellow }
 Write-Host ''
 Write-Host 'Next: fully quit and reopen Codex, create a new thread, and review /hooks.' -ForegroundColor Yellow
 Write-Host 'Native Windows uses a managed local Codex App Server for create, continue, and stop controls.'

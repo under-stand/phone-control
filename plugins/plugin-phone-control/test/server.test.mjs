@@ -1270,7 +1270,7 @@ export const tests = [
         assert.equal(delivered.status, 200);
         const record = bridge.commands.get("phone-image-api-0001");
         assert.equal(record.images.length, 1);
-        assert.match(record.images[0].path, /uploads\/phone-[a-f0-9-]+\.png$/);
+        assert.match(record.images[0].path.replaceAll("\\", "/"), /uploads\/phone-[a-f0-9-]+\.png$/);
         await access(record.images[0].path);
         const reused = await request({
           port: started.port,

@@ -507,6 +507,7 @@ export const tests = [
   {
     name: "creates a fresh thread and permanently deletes it only after it is idle",
     async run() {
+      const cwd = process.cwd();
       const harness = transportHarness({ loadedThreads: [] });
       const bridge = new CodexAppServerBridge({
         transportFactory: harness.transportFactory,
@@ -517,7 +518,7 @@ export const tests = [
         assert.equal(await bridge.start(), true);
         const created = await bridge.createSession({
           text: "Build the mobile feature",
-          cwd: "/tmp",
+          cwd,
           model: "gpt-choice",
           reasoningEffort: "high",
           serviceTier: "priority",
@@ -525,9 +526,9 @@ export const tests = [
         }, { id: "device-1", name: "Test phone" });
         assert.equal(created.action, "create");
         assert.equal(created.sessionId, "thread-created-1");
-        assert.equal(created.cwd, "/tmp");
+        assert.equal(created.cwd, cwd);
         const startThread = harness.sent.find((message) => message.method === "thread/start");
-        assert.deepEqual(startThread.params, { cwd: "/tmp", model: "gpt-choice", serviceTier: "priority", serviceName: "phone-control" });
+        assert.deepEqual(startThread.params, { cwd, model: "gpt-choice", serviceTier: "priority", serviceName: "phone-control" });
         const startTurn = harness.sent.find((message) => message.method === "turn/start");
         assert.equal(startTurn.params.threadId, "thread-created-1");
         assert.equal(startTurn.params.input[0].text, "Build the mobile feature");

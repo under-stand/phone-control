@@ -22,6 +22,10 @@ export const tests = [
       assert.match(script, /global:LASTEXITCODE = 0/);
       const nodeProbe = script.match(/function Get-NodeMajor[\s\S]*?\n}/)?.[0] || "";
       assert.doesNotMatch(nodeProbe, /LASTEXITCODE/);
+      assert.match(script, /ValidateRange\(0, 65535\)/);
+      assert.match(script, /function Test-PortAvailable/);
+      assert.match(script, /function Select-PhoneControlPort/);
+      assert.match(script, /already in use; using available port/);
       assert.match(script, /@openai\/codex@latest/);
       assert.match(script, /plugin', 'marketplace', 'add'/);
       assert.match(script, /\$marketplaceRoot/);
@@ -30,9 +34,10 @@ export const tests = [
       assert.match(script, /'ci', '--omit=dev'/);
       assert.match(script, /'service', 'install',[\s\S]*'--runtime'/);
       assert.match(script, /'--codex-command', \$codex/);
-      assert.match(script, /'--app-server-transport', 'auto'/);
-      assert.match(script, /tailscale serve --bg 8787/);
-      assert.match(script, /127\.0\.0\.1:8787\/api\/health/);
+      assert.match(script, /'--app-server-transport', 'auto',/);
+      assert.match(script, /'--port', \$selectedPort/);
+      assert.match(script, /tailscale serve --bg --yes \$selectedPort/);
+      assert.match(script, /127\.0\.0\.1:\{0\}\/api\/health/);
       assert.match(script, /health\.ok -and \$health\.ready -eq \$true/);
       assert.match(script, /fully quit and reopen Codex/);
       assert.match(script, /Native Windows uses a managed local Codex App Server/);

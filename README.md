@@ -58,7 +58,8 @@ node ./bin/phone-control.mjs pair --no-qr
 ```
 
 Linux 优先使用 user systemd，macOS 使用原生 user launchd，其他 Unix 环境回退到 `tmux + cron`。
-服务默认只监听 `127.0.0.1:8787`；不要把普通 HTTP 服务直接暴露到公网。手机接入、配对、更新、
+服务默认只监听 `127.0.0.1:8787`；Windows 安装器发现 8787 被占用时会自动选择附近的空闲回环端口，
+并在输出中显示实际地址。不要把普通 HTTP 服务直接暴露到公网。手机接入、配对、更新、
 VPS Relay 和故障处理见[完整使用说明](plugins/plugin-phone-control/README.md)。
 
 ## 仓库结构

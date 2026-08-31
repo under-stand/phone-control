@@ -105,9 +105,10 @@ export const tests = [
         assert.equal(metadata.includes(token), false);
         assert.equal(clientConfig.includes(token), false);
         assert.equal(await readFile(dataPaths(temporary).relayToken, "utf8"), token + "\n");
-        assert.equal((await stat(dataPaths(temporary).relayConfig)).mode & 0o777, 0o600);
-        assert.equal((await stat(dataPaths(temporary).relayClientConfig)).mode & 0o777, 0o600);
-        assert.equal((await stat(dataPaths(temporary).relayToken)).mode & 0o777, 0o600);
+        const expectedPrivateMode = process.platform === "win32" ? 0o666 : 0o600;
+        assert.equal((await stat(dataPaths(temporary).relayConfig)).mode & 0o777, expectedPrivateMode);
+        assert.equal((await stat(dataPaths(temporary).relayClientConfig)).mode & 0o777, expectedPrivateMode);
+        assert.equal((await stat(dataPaths(temporary).relayToken)).mode & 0o777, expectedPrivateMode);
         await updateRelayConfig(temporary, (current) => ({ ...current, active: true }));
         assert.equal((await loadRelayConfig(temporary)).active, true);
       } finally {
