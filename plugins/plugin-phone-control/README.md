@@ -72,6 +72,9 @@ Unix Socket 是共享进程，当前不提供这个立即移交按钮。
 
 ### Windows 一键安装（推荐）
 
+最省事的方式：把本仓库链接直接发给 Codex，并让它替你安装：
+<https://github.com/under-stand/phone-control>
+
 如果仓库是公开的，Windows PowerShell 中可以直接粘贴下面一行：
 
 ```powershell

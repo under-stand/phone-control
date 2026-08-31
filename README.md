@@ -27,6 +27,9 @@ WSL2 终端里直接运行 `codex` 才是 CLI。参见 OpenAI 官方的
 
 ## Windows 一键安装
 
+不想手动操作时，直接把这个仓库链接发给 Codex，并说“帮我安装 Phone Control”即可：
+<https://github.com/under-stand/phone-control>
+
 在普通 Windows PowerShell 中粘贴：
 
 ```powershell
