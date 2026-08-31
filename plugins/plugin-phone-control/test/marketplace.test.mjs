@@ -31,7 +31,13 @@ export const tests = [
         const result = await writeMarketplaceManifest({ pluginRoot, marketplaceRoot });
         const manifest = JSON.parse(await readFile(result.manifestPath, "utf8"));
         assert.equal(manifest.plugins[0].source.path, "./plugins/plugin-phone-control");
-        assert.equal(await realpath(path.join(marketplaceRoot, "plugins", "plugin-phone-control")), pluginRoot);
+        // Windows may return the short 8.3 spelling for os.tmpdir() while
+        // realpath() resolves the symlink to the long spelling. Compare
+        // canonical paths on both sides so the assertion is platform-neutral.
+        assert.equal(
+          await realpath(path.join(marketplaceRoot, "plugins", "plugin-phone-control")),
+          await realpath(pluginRoot),
+        );
         assert.equal(
           defaultMarketplaceRoot("/home/example"),
           path.join("/home/example", ".phone-control", "marketplace"),
