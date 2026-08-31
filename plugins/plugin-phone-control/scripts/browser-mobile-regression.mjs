@@ -29,7 +29,10 @@ async function installedBrowser() {
 }
 
 const dataDir = await mkdtemp(path.join(os.tmpdir(), "phone-control-browser-mobile-"));
-const broker = new BrowserExtensionBroker({ commandTimeoutMs: 5_000 });
+// Browser startup on a hosted Windows runner can take longer than the local
+// five-second smoke-test window. Keep the command alive long enough for the
+// page to finish loading before the simulated extension responds.
+const broker = new BrowserExtensionBroker({ commandTimeoutMs: 30_000 });
 broker.connect({ clientId: "chrome-visual", origin: EXTENSION_ORIGIN });
 const runtime = await createPhoneControlServer({
   config: { host: "127.0.0.1", port: 0, token: "visual-token", dataDir },
@@ -42,7 +45,11 @@ try {
   const started = await runtime.start();
   const responding = (async () => {
     for (let index = 0; index < 2; index += 1) {
-      const delivery = await broker.poll("chrome-visual", EXTENSION_ORIGIN, 5_000);
+      let delivery = await broker.poll("chrome-visual", EXTENSION_ORIGIN, 20_000);
+      // A slow browser launch may let the first long poll expire before the
+      // page's module script reaches its initial listTabs action. Retry once
+      // instead of treating that startup race as a product regression.
+      if (!delivery.command) delivery = await broker.poll("chrome-visual", EXTENSION_ORIGIN, 20_000);
       assert.ok(delivery.command, "the mobile browser page did not request its expected command");
       const tabs = [{
         id: "7",
