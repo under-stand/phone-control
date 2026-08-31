@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { access, readFile, readdir } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,7 +31,7 @@ import { PHONE_CONTROL_VERSION } from "../src/version.mjs";
 import { defaultMarketplaceRoot, writeMarketplaceManifest } from "../src/marketplace.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const BOOLEAN_FLAGS = new Set(["activate", "no-qr", "secure-cookies"]);
+const BOOLEAN_FLAGS = new Set(["activate", "copy", "no-qr", "open", "secure-cookies"]);
 
 function parse(argv) {
   const command = argv[0] && !argv[0].startsWith("-") ? argv[0] : "help";
@@ -65,7 +66,8 @@ function printHelp() {
   process.stdout.write(`Phone Control ${PHONE_CONTROL_VERSION}\n\n`);
   process.stdout.write(`Usage:\n`);
   process.stdout.write(`  phone-control start [--host HOST] [--port PORT] [--public-url URL] [--codex-command PATH]\n`);
-  process.stdout.write(`  phone-control pair [--url URL] [--no-qr]\n`);
+  process.stdout.write(`  phone-control pair [--url URL] [--no-qr] [--copy] [--open]\n`);
+  process.stdout.write(`  phone-control share [--url URL]\n`);
   process.stdout.write(`  phone-control approvals <enable|disable|status>\n`);
   process.stdout.write(`  phone-control interactions <enable|disable|status>\n`);
   process.stdout.write(`  phone-control service <install|uninstall|status|start|stop|restart> [--runtime NODE]\n`);
@@ -172,6 +174,63 @@ async function printPairing(pairing, { qr = true, label = "Pair" } = {}) {
   }
 }
 
+function runClipboardCommand(command, args, value) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["pipe", "ignore", "pipe"], windowsHide: true });
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(stderr.trim() || `${command} exited with code ${code}`));
+    });
+    child.stdin.end(value);
+  });
+}
+
+async function copyToClipboard(value) {
+  const candidates = process.platform === "win32"
+    ? [["clip.exe", []]]
+    : process.platform === "darwin"
+      ? [["pbcopy", []]]
+      : [["wl-copy", []], ["xclip", ["-selection", "clipboard"]], ["xsel", ["--clipboard", "--input"]]];
+  let lastError;
+  for (const [command, args] of candidates) {
+    try {
+      await runClipboardCommand(command, args, value);
+      return command;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(`无法写入剪贴板，请手动复制链接${lastError ? `（${lastError.message}）` : ""}`);
+}
+
+function openInBrowser(url) {
+  const command = process.platform === "win32"
+    ? "rundll32.exe"
+    : process.platform === "darwin"
+      ? "open"
+      : "xdg-open";
+  const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true });
+    let settled = false;
+    const timer = setTimeout(() => {
+      settled = true;
+      child.unref();
+      resolve(command);
+    }, 250);
+    child.once("error", (error) => {
+      if (settled) return;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.unref();
+  });
+}
+
 async function start(flags) {
   const config = await loadConfig();
   const runtime = await createPhoneControlServer({ config, pluginRoot: ROOT });
@@ -214,7 +273,16 @@ async function pair(flags) {
     body: { baseUrl },
     timeoutMs: 2_000,
   });
-  await printPairing(result.body.pairing, { qr: !flags["no-qr"] });
+  const pairing = result.body.pairing;
+  await printPairing(pairing, { qr: !flags["no-qr"] });
+  if (flags.copy) {
+    const command = await copyToClipboard(pairing.url);
+    process.stdout.write(`Copied pairing URL to clipboard (${command}).\n`);
+  }
+  if (flags.open) {
+    const command = await openInBrowser(pairing.url);
+    process.stdout.write(`Opened pairing URL with ${command}.\n`);
+  }
 }
 
 async function configureApprovals(action) {
@@ -387,6 +455,7 @@ try {
   if (command === "start") await start(flags);
   else if (command === "doctor") await doctor();
   else if (command === "pair" || command === "url") await pair(flags);
+  else if (command === "share") await pair({ ...flags, copy: true, open: true, "no-qr": true });
   else if (command === "approvals") await configureApprovals(positionals[0]);
   else if (command === "interactions") await configureInteractions(positionals[0]);
   else if (command === "service") await service(positionals[0] || "status", flags);

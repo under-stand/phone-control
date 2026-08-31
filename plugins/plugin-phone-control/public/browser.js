@@ -1,4 +1,4 @@
-import { mapPointerToViewport } from "./lib/browser-frame-controls.js?v=63";
+import { mapPointerToViewport } from "./lib/browser-frame-controls.js?v=64";
 
 const elements = {
   connection: document.querySelector("#browser-connection"),

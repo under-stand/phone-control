@@ -7,7 +7,7 @@
     <meta name="description" content="在手机上实时追踪本机 Codex Desktop 和 CLI 任务。">
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/styles.css?v=63">
+    <link rel="stylesheet" href="/styles.css?v=64">
     <title>Phone Control</title>
   </head>
   <body>
@@ -109,11 +109,21 @@
         <button class="detail-close" id="devices-close" aria-label="关闭"><img src="/icons/x.svg" alt=""></button>
         <p class="eyebrow">PAIRED DEVICES</p>
         <h2>设备与配对</h2>
-        <p class="devices-copy">每台设备都有独立凭证，丢失后可以单独撤销。新链接十分钟后过期且只能使用一次。</p>
-        <button class="primary-action" id="new-pairing" type="button">生成一次性配对链接</button>
+        <p class="devices-copy">每台设备都有独立凭证，丢失后可以单独撤销。点击下面的按钮即可生成手机控制链接并复制到剪贴板；新链接十分钟后过期且只能使用一次。</p>
+        <button class="primary-action" id="new-pairing" type="button">生成并复制手机链接</button>
         <div class="pairing-link" id="pairing-link" hidden>
-          <input id="pairing-link-value" readonly aria-label="一次性配对链接">
-          <button id="copy-pairing" type="button">复制</button>
+          <div class="pairing-link-heading">
+            <div><b>手机控制链接</b><small id="pairing-link-meta">正在读取有效期…</small></div>
+            <span id="pairing-link-status" data-state="active">有效</span>
+          </div>
+          <div class="pairing-link-field">
+            <input id="pairing-link-value" readonly aria-label="一次性配对链接">
+            <button id="copy-pairing" type="button">复制链接</button>
+          </div>
+          <div class="pairing-link-actions">
+            <a id="open-pairing" href="#" target="_blank" rel="noopener">在本机打开</a>
+            <small>把链接粘贴到手机浏览器即可完成配对</small>
+          </div>
         </div>
         <div class="device-list" id="device-list"></div>
       </div>
@@ -205,6 +215,6 @@
       <span class="signal-toast-mark">✓</span>
       <span aria-live="polite"><b id="signal-toast-title">任务已完成</b><small id="signal-toast-body">点按查看最新结果</small></span>
     </button>
-    <script src="/app.js?v=63" type="module"></script>
+    <script src="/app.js?v=64" type="module"></script>
   </body>
 </html>

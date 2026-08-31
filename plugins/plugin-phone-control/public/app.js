@@ -9,8 +9,8 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=63";
-import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=63";
+} from "./lib/format.js?v=64";
+import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=64";
 
 function storedCompletionKeys() {
   try {
@@ -90,6 +90,8 @@ const state = {
   newSessionTierTouched: false,
   composerModelSelections: new Map(),
   runtimeSessionId: null,
+  pairing: null,
+  pairingExpiryTimer: null,
   expandedGroups: new Set(),
   expandedComposers: new Set(),
   renderScheduled: false,
@@ -180,8 +182,11 @@ const elements = {
   runtimeSettingsContent: document.querySelector("#runtime-settings-content"),
   newPairing: document.querySelector("#new-pairing"),
   pairingLink: document.querySelector("#pairing-link"),
+  pairingLinkMeta: document.querySelector("#pairing-link-meta"),
+  pairingLinkStatus: document.querySelector("#pairing-link-status"),
   pairingLinkValue: document.querySelector("#pairing-link-value"),
   copyPairing: document.querySelector("#copy-pairing"),
+  openPairing: document.querySelector("#open-pairing"),
   toast: document.querySelector("#toast"),
   signalToast: document.querySelector("#signal-toast"),
   signalToastTitle: document.querySelector("#signal-toast-title"),
@@ -2799,10 +2804,73 @@ async function showDevices() {
   try {
     const payload = await request("/api/devices");
     renderDevices(payload);
-    elements.pairingLink.hidden = true;
+    updatePairingLinkState();
     elements.devicesDialog.showModal();
   } catch (error) {
     if (error.message !== "UNAUTHORIZED") toast(error.message);
+  }
+}
+
+function clearPairingExpiryTimer() {
+  if (state.pairingExpiryTimer) {
+    clearInterval(state.pairingExpiryTimer);
+    state.pairingExpiryTimer = null;
+  }
+}
+
+function pairingCountdown(expiresAt) {
+  const remainingMs = Date.parse(expiresAt) - Date.now();
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return null;
+  const totalSeconds = Math.ceil(remainingMs / 1_000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return `${minutes}分${seconds}秒`;
+}
+
+function updatePairingLinkState() {
+  const pairing = state.pairing;
+  if (!pairing?.url || !pairing.expiresAt) return;
+  const countdown = pairingCountdown(pairing.expiresAt);
+  const expired = !countdown;
+  elements.pairingLinkMeta.textContent = expired
+    ? "链接已过期，请重新生成"
+    : `还剩 ${countdown} · 只能使用一次`;
+  elements.pairingLinkStatus.textContent = expired ? "已过期" : "有效";
+  elements.pairingLinkStatus.dataset.state = expired ? "expired" : "active";
+  elements.pairingLink.classList.toggle("is-expired", expired);
+  elements.openPairing.toggleAttribute("aria-disabled", expired);
+  elements.openPairing.tabIndex = expired ? -1 : 0;
+  if (expired) {
+    clearPairingExpiryTimer();
+  } else if (!state.pairingExpiryTimer) {
+    state.pairingExpiryTimer = setInterval(updatePairingLinkState, 1_000);
+  }
+}
+
+async function createPairingLink() {
+  elements.newPairing.disabled = true;
+  elements.newPairing.textContent = "生成中…";
+  clearPairingExpiryTimer();
+  try {
+    const payload = await request("/api/pairings", { method: "POST" });
+    const pairing = payload.pairing;
+    if (!pairing?.url || !pairing.expiresAt) throw new Error("服务没有返回有效的配对链接");
+    state.pairing = pairing;
+    elements.pairingLinkValue.value = pairing.url;
+    elements.openPairing.href = pairing.url;
+    elements.pairingLink.hidden = false;
+    updatePairingLinkState();
+    try {
+      await writeClipboardText(pairing.url);
+      toast("手机控制链接已生成并复制，可粘贴到手机打开");
+    } catch {
+      toast("手机控制链接已生成，请点击“复制链接”");
+    }
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    elements.newPairing.disabled = false;
+    elements.newPairing.textContent = state.pairing ? "重新生成手机链接" : "生成并复制手机链接";
   }
 }
 
@@ -3689,23 +3757,22 @@ elements.runtimeSettingsDialog.addEventListener("close", () => {
   syncDetailLayoutState();
 });
 
-elements.newPairing.addEventListener("click", async () => {
-  try {
-    const payload = await request("/api/pairings", { method: "POST" });
-    elements.pairingLinkValue.value = payload.pairing.url;
-    elements.pairingLink.hidden = false;
-  } catch (error) {
-    toast(error.message);
-  }
-});
+elements.newPairing.addEventListener("click", () => void createPairingLink());
 
 elements.copyPairing.addEventListener("click", async () => {
   try {
     await writeClipboardText(elements.pairingLinkValue.value);
-    toast("一次性配对链接已复制");
+    toast("手机控制链接已复制");
   } catch {
     elements.pairingLinkValue.select();
     toast("请长按复制配对链接");
+  }
+});
+
+elements.openPairing.addEventListener("click", (event) => {
+  if (!state.pairing || !pairingCountdown(state.pairing.expiresAt)) {
+    event.preventDefault();
+    toast("配对链接已过期，请重新生成");
   }
 });
 

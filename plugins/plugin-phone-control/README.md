@@ -217,6 +217,16 @@ HTTPS 安全上下文。
 `pair` 会生成一个十分钟有效、只能使用一次的 URL。用手机打开后，服务端会签发该设备独有的
 HttpOnly Cookie，并立即从地址栏移除配对码。
 
+如果想在电脑端一键生成并打开链接，同时复制到剪贴板，可以直接运行：
+
+```bash
+node ./bin/phone-control.mjs share
+```
+
+`share` 等价于 `pair --copy --open --no-qr`；需要只复制或只打开时，也可以分别使用
+`pair --copy` 和 `pair --open`。浏览器端的“设备与配对”页同样支持“生成并复制手机链接”，
+并会显示剩余有效时间。
+
 这里的 `code=...` 是一次性配对码，必须随完整 `/pair?code=...` URL 打开；它不是首页“访问口令”
 输入框使用的长期主令牌。一次性配对 URL 用过或过期后应重新运行 `phone-control pair --no-qr`，
 不要把旧 `code` 单独粘贴到访问口令输入框。
@@ -310,6 +320,7 @@ Hook 审批同样只接管由手机开始或追加的精确 turn。Desktop/CLI �
 | --- | --- |
 | `phone-control doctor` | 检查 Node、服务、插件路径和 App Server |
 | `phone-control pair --no-qr` | 生成新的单次手机配对链接 |
+| `phone-control share` | 生成链接、复制到剪贴板并在本机浏览器打开 |
 | `phone-control service status` | 查看主服务状态 |
 | `phone-control service restart` | 重启主服务并应用配置 |
 | `phone-control relay status` | 查看 VPS Relay 是否安装、运行和激活 |
@@ -322,7 +333,8 @@ Hook 审批同样只接管由手机开始或追加的精确 turn。Desktop/CLI �
 
 ```text
 phone-control start [--host HOST] [--port PORT] [--public-url URL]
-phone-control pair [--url URL] [--no-qr]
+  phone-control pair [--url URL] [--no-qr] [--copy] [--open]
+  phone-control share [--url URL]
 phone-control approvals <enable|disable|status>
 phone-control interactions <enable|disable|status>
 phone-control service <install|uninstall|status|start|stop|restart> [--runtime NODE]

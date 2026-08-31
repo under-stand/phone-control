@@ -910,9 +910,16 @@ https://inside-fence.example
   bridge.set("thread-active", { status: "idle", activeFlags: [], activeTurnId: null });
   await page.locator("#detail-close").click();
   await page.setViewportSize({ width: 412, height: 915 });
+  await page.locator("#top-menu-trigger").click();
   await page.locator("#devices-button").click();
   await page.locator("#device-list .device-section .device-row").waitFor();
   assert.equal(await page.locator("#pairing-link").isHidden(), true, "an empty pairing-link field must stay hidden until the user generates a link");
+  await page.locator("#new-pairing").click();
+  await page.locator("#pairing-link").waitFor({ state: "visible" });
+  assert.match(await page.locator("#pairing-link-value").inputValue(), /\/pair\?code=/, "the device page should show a one-time pairing URL");
+  assert.match(await page.locator("#pairing-link-meta").innerText(), /还剩/, "the pairing card should show a live expiry countdown");
+  assert.equal(await page.evaluate(() => window.__phoneControlCopiedText), await page.locator("#pairing-link-value").inputValue(), "generating a pairing URL should copy it for the phone");
+  assert.equal(await page.locator("#open-pairing").getAttribute("target"), "_blank", "the generated URL should be available to open locally");
   assert.equal(await page.locator("#device-list .device-section .device-row").count(), 1, "the device page should show active devices first");
   assert.equal(await page.locator("#device-list .device-archive").count(), 1);
   assert.match(await page.locator("#device-list .device-archive summary").innerText(), /20/);

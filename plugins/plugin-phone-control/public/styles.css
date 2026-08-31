@@ -602,9 +602,21 @@ button { color: inherit; }
 .diagnostic-agent { overflow: hidden; margin: -3px 0 10px; color: var(--muted); font: 11px ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .status-footnote { margin: 13px 4px 0; color: var(--muted); font-size: 11px; line-height: 1.55; text-align: center; }
 .primary-action { width: 100%; padding: 12px; border: 0; border-radius: 12px; background: var(--ink); color: white; font-size: 11px; font-weight: 800; cursor: pointer; }
-.pairing-link { display: grid; grid-template-columns: 1fr auto; gap: 7px; margin-top: 10px; }
+.pairing-link { display: grid; gap: 9px; margin-top: 11px; padding: 12px; border: 1px solid rgba(104,87,245,.18); border-radius: 14px; background: rgba(104,87,245,.045); }
+.pairing-link-heading { display: flex; align-items: start; justify-content: space-between; gap: 10px; }
+.pairing-link-heading b, .pairing-link-heading small { display: block; }
+.pairing-link-heading b { font-size: 11px; }
+.pairing-link-heading small { margin-top: 3px; color: var(--muted); font-size: 9px; font-weight: 600; letter-spacing: normal; }
+.pairing-link-heading > span { flex: 0 0 auto; padding: 4px 7px; border-radius: 99px; background: rgba(35,133,101,.12); color: var(--green); font-size: 9px; font-weight: 800; }
+.pairing-link-heading > span[data-state="expired"] { background: rgba(166,59,37,.1); color: #a63b25; }
+.pairing-link.is-expired { border-color: rgba(166,59,37,.2); background: rgba(166,59,37,.035); }
+.pairing-link-field { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
 .pairing-link input { min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); font: 9px ui-monospace, monospace; }
 .pairing-link button { padding: 0 13px; border: 0; border-radius: 10px; background: var(--violet); color: white; font-size: 10px; font-weight: 800; }
+.pairing-link-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.pairing-link-actions a { color: var(--violet); font-size: 10px; font-weight: 800; text-decoration: none; }
+.pairing-link-actions a[aria-disabled="true"] { color: var(--muted); pointer-events: none; }
+.pairing-link-actions small { color: var(--muted); font-size: 9px; text-align: right; }
 .device-list { display: grid; gap: 12px; margin-top: 20px; }
 .device-section > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; color: var(--muted); font-size: 10px; }
 .device-section > header b { color: var(--ink); font-size: 11px; }
@@ -649,11 +661,18 @@ button { color: inherit; }
 .signal-toast small { overflow: hidden; margin-top: 3px; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 
 @media (min-width: 700px) {
-  .shell { padding-inline: 24px; }
+  .shell { width: min(100%, 1100px); padding-inline: 32px; }
   .task-section { padding-top: 48px; }
-  .project-task-list { grid-template-columns: 1fr 1fr; }
+  .project-task-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
   .task-card[data-status="waiting"] { grid-column: span 2; }
   .detail-header, .detail-scroll, .detail-actions { padding-inline: 34px; }
+}
+
+@media (min-width: 1100px) {
+  .shell { width: min(100%, 1240px); padding-inline: 40px; }
+  .task-section { padding-top: 58px; }
+  .detail { max-width: none; }
+  .detail-sheet { inset: 0 0 0 auto; width: min(720px, 62vw); height: 100%; max-height: none; border-radius: 28px 0 0 28px; box-shadow: -18px 0 60px rgba(0,0,0,.18); }
 }
 
 @media (max-width: 699px) {
