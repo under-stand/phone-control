@@ -5,6 +5,7 @@ import path, { dirname } from "node:path";
 import { clampText } from "./utils.mjs";
 import { resolveCodexHome } from "./paths.mjs";
 import { createAppServerTransport } from "./app-server-transport.mjs";
+import { PHONE_CONTROL_VERSION } from "./version.mjs";
 
 // Match the official remote App Server client's bounded message envelope. The
 // bridge still avoids large history responses by using metadata-only resume.
@@ -13,12 +14,15 @@ const MAX_AUDIT_BYTES = 4 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 5_000;
 const LOADED_THREAD_REFRESH_MS = 2_000;
 const SUBSCRIPTION_RETRY_MIN_MS = 1_000;
+const SUBSCRIPTION_CONCURRENCY = 4;
 const PERMANENT_SUBSCRIPTION_FAILURE_ATTEMPTS = 3;
 const CODEX_STATUS_CACHE_MS = 30_000;
 const MODEL_CATALOG_CACHE_MS = 5 * 60_000;
 const MAX_PHONE_INPUT_CHARS = 4_000;
 const MAX_COMMAND_RECORDS = 512;
-const CLIENT_VERSION = "0.8.0";
+const NATIVE_APPROVAL_TIMEOUT_MS = 10 * 60_000;
+const HANDOFF_CLOSE_TIMEOUT_MS = 5_000;
+const CLIENT_VERSION = PHONE_CONTROL_VERSION;
 const RESUME_INITIAL_TURNS_PAGE = Object.freeze({
   limit: 1,
   sortDirection: "desc",
@@ -273,6 +277,93 @@ function normalizeModelSelection(value, label) {
   return normalized;
 }
 
+function permissionSelection(value, cwd, confirmed = false) {
+  if (value == null || value === "" || value === "default") return null;
+  if (typeof value !== "string") throw httpError("Permission profile is invalid", 400);
+  const profile = value.trim();
+  if (!new Set(["read-only", "workspace-write", "on-request", "danger-full-access"]).has(profile)) {
+    throw httpError("Permission profile is invalid", 400);
+  }
+  if (profile === "danger-full-access" && !confirmed) {
+    throw httpError("Full computer access requires explicit confirmation", 400);
+  }
+  if (profile === "read-only") {
+    return {
+      profile,
+      approvalPolicy: "never",
+      sandbox: "readOnly",
+      sandboxPolicy: { type: "readOnly" },
+      permissionMode: "read-only",
+    };
+  }
+  if (profile === "danger-full-access") {
+    return {
+      profile,
+      approvalPolicy: "never",
+      sandbox: "dangerFullAccess",
+      sandboxPolicy: { type: "dangerFullAccess" },
+      permissionMode: "danger-full-access",
+    };
+  }
+  return {
+    profile,
+    approvalPolicy: profile === "on-request" ? "onRequest" : "never",
+    sandbox: "workspaceWrite",
+    sandboxPolicy: {
+      type: "workspaceWrite",
+      writableRoots: cwd ? [cwd] : [],
+      networkAccess: false,
+    },
+    permissionMode: "workspace-write",
+  };
+}
+
+function normalizeNativeApproval(method, params) {
+  if (!params || typeof params !== "object") return null;
+  const sessionId = clampText(params.threadId, 200);
+  const turnId = clampText(params.turnId, 200);
+  const itemId = clampText(params.itemId, 200);
+  if (!sessionId || !turnId) return null;
+  const command = Array.isArray(params.command)
+    ? params.command.map((part) => String(part)).join(" ")
+    : clampText(params.command, 4_000);
+  const pathValue = clampText(params.path ?? params.grantRoot, 4_096);
+  const isCommand = method === "item/commandExecution/requestApproval";
+  const isFileChange = method === "item/fileChange/requestApproval";
+  const isPermissionRequest = method === "item/permissions/requestApproval";
+  if (!isCommand && !isFileChange && !isPermissionRequest) return null;
+  let requestedPermissions = null;
+  if (isPermissionRequest && params.permissions && typeof params.permissions === "object") {
+    const serialized = JSON.stringify(params.permissions);
+    if (Buffer.byteLength(serialized) > 16 * 1024) return null;
+    requestedPermissions = JSON.parse(serialized);
+  }
+  const permissionSummary = requestedPermissions ? clampText(JSON.stringify(requestedPermissions), 4_000) : null;
+  const reason = clampText(params.reason, 2_000)
+    || (isCommand
+      ? "Codex 请求运行一条需要额外权限的命令"
+      : isFileChange
+        ? "Codex 请求修改沙箱范围外的文件"
+        : "Codex 请求额外的网络或文件权限");
+  return {
+    sessionId,
+    turnId,
+    itemId: itemId || null,
+    tool: {
+      name: isCommand ? "命令执行" : isFileChange ? "文件修改" : "额外权限",
+      summary: reason,
+    },
+    reason,
+    cwd: clampText(params.cwd, 4_096) || null,
+    details: {
+      ...(command ? { command } : {}),
+      ...(pathValue ? { path: pathValue } : {}),
+      ...(permissionSummary ? { permissionRequest: permissionSummary } : {}),
+    },
+    requestedPermissions,
+  };
+}
+
 function runtimeFromThread(thread, initialTurnsPage = null) {
   if (!thread || typeof thread !== "object") return null;
   const status = thread.status && typeof thread.status.type === "string"
@@ -360,6 +451,7 @@ export class CodexAppServerBridge extends EventEmitter {
     requestTimeoutMs = REQUEST_TIMEOUT_MS,
     loadedThreadRefreshMs = LOADED_THREAD_REFRESH_MS,
     subscriptionRetryMinMs = SUBSCRIPTION_RETRY_MIN_MS,
+    subscriptionConcurrency = SUBSCRIPTION_CONCURRENCY,
     reconnect = true,
     auditLogPath = null,
   } = {}) {
@@ -372,6 +464,7 @@ export class CodexAppServerBridge extends EventEmitter {
     this.requestTimeoutMs = requestTimeoutMs;
     this.loadedThreadRefreshMs = loadedThreadRefreshMs;
     this.subscriptionRetryMinMs = subscriptionRetryMinMs;
+    this.subscriptionConcurrency = Math.max(1, Math.min(8, Number.isSafeInteger(subscriptionConcurrency) ? subscriptionConcurrency : SUBSCRIPTION_CONCURRENCY));
     this.reconnect = reconnect;
     this.auditLogPath = auditLogPath;
     this.transport = null;
@@ -380,11 +473,13 @@ export class CodexAppServerBridge extends EventEmitter {
     this.nextRequestId = 1;
     this.clientRequests = new Map();
     this.interactions = new Map();
+    this.nativeApprovals = new Map();
     this.loadedThreads = new Set();
     this.subscribedThreads = new Set();
     this.subscribingThreads = new Map();
     this.subscriptionFailures = new Map();
     this.quarantinedThreads = new Map();
+    this.handedOffThreads = new Map();
     this.threadStates = new Map();
     this.commands = new Map();
     this.interruptRequests = new Map();
@@ -397,6 +492,7 @@ export class CodexAppServerBridge extends EventEmitter {
     this.refreshingLoadedThreads = null;
     this.reconnectDelayMs = 1_000;
     this.activeSubscriptionThreadId = null;
+    this.activeSubscriptionThreadIds = new Set();
     this.resumeQueue = Promise.resolve();
     this.auditQueue = Promise.resolve();
     this.serverInfo = null;
@@ -405,6 +501,8 @@ export class CodexAppServerBridge extends EventEmitter {
     this.modelCatalogCache = null;
     this.modelCatalogLoading = null;
     this.approvalConfigurationCache = null;
+    this.handoffInProgress = false;
+    this.reclaimingThreads = new Set();
   }
 
   status() {
@@ -422,6 +520,10 @@ export class CodexAppServerBridge extends EventEmitter {
       if (!unavailableThreads.includes(threadId)) unavailableThreads.push(threadId);
       unavailableThreadReasons[threadId] = quarantine.reason;
     }
+    for (const [threadId, handoff] of this.handedOffThreads) {
+      if (!unavailableThreads.includes(threadId)) unavailableThreads.push(threadId);
+      unavailableThreadReasons[threadId] = handoff.reason;
+    }
     return {
       connected: this.connected,
       initialized: this.initialized,
@@ -432,8 +534,11 @@ export class CodexAppServerBridge extends EventEmitter {
       server: this.serverInfo ? { ...this.serverInfo } : null,
       unavailableThreads,
       unavailableThreadReasons,
+      handedOffThreads: Array.from(this.handedOffThreads.keys()),
+      handoffSupported: this.initialized && this.transportKind === "managed-stdio",
       retryingSubscriptions,
       pendingQuestions: this.list().length,
+      pendingApprovals: this.listApprovals().length,
     };
   }
 
@@ -446,6 +551,18 @@ export class CodexAppServerBridge extends EventEmitter {
   get(id) {
     const interaction = this.interactions.get(id);
     return interaction ? this.publicInteraction(interaction) : null;
+  }
+
+  listApprovals(sessionId = null) {
+    return Array.from(this.nativeApprovals.values())
+      .filter((approval) => approval.status === "pending" && (!sessionId || approval.sessionId === sessionId))
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .map((approval) => this.publicApproval(approval));
+  }
+
+  getApproval(id) {
+    const approval = this.nativeApprovals.get(id);
+    return approval ? this.publicApproval(approval) : null;
   }
 
   async start() {
@@ -596,12 +713,22 @@ export class CodexAppServerBridge extends EventEmitter {
       this.receiveQuestion(message);
       return;
     }
+    if (["item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval"].includes(message.method)
+      && Object.prototype.hasOwnProperty.call(message, "id")) {
+      this.receiveNativeApproval(message);
+      return;
+    }
     if (message.method === "serverRequest/resolved") {
       const requestId = String(message.params?.requestId);
       const threadId = message.params?.threadId;
       for (const interaction of this.interactions.values()) {
         if (interaction.status === "pending" && String(interaction.rpcId) === requestId && interaction.sessionId === threadId) {
           this.makeUnavailable(interaction.id, "问题已在另一台已连接的 Codex 客户端处理");
+        }
+      }
+      for (const approval of this.nativeApprovals.values()) {
+        if (approval.status === "pending" && String(approval.rpcId) === requestId && approval.sessionId === threadId) {
+          this.makeApprovalUnavailable(approval.id, "审批已在另一台已连接的 Codex 客户端处理");
         }
       }
       const state = this.threadStates.get(threadId);
@@ -623,6 +750,13 @@ export class CodexAppServerBridge extends EventEmitter {
       const threadId = message.params?.threadId;
       const turnId = message.params?.turn?.id;
       if (typeof threadId === "string" && typeof turnId === "string") {
+        const pendingPhoneCommand = Array.from(this.commands.values()).reverse().find((command) => (
+          command.sessionId === threadId
+          && command.status === "sending"
+          && !command.turnId
+          && ["create", "start"].includes(command.action)
+        ));
+        if (pendingPhoneCommand) pendingPhoneCommand.turnId = turnId;
         if (this.interruptRequests.get(threadId)?.turnId !== turnId) this.interruptRequests.delete(threadId);
         this.setThreadState(threadId, { status: "active", activeFlags: [], activeTurnId: turnId });
       }
@@ -630,6 +764,20 @@ export class CodexAppServerBridge extends EventEmitter {
     if (message.method === "turn/completed") {
       const threadId = message.params?.threadId;
       const turnId = message.params?.turn?.id;
+      for (const command of this.commands.values()) {
+        if (command.sessionId !== threadId || !turnId || command.turnId !== turnId) continue;
+        command.phoneOwnershipEndedAt = new Date().toISOString();
+      }
+      for (const interaction of this.interactions.values()) {
+        if (interaction.status !== "pending" || interaction.sessionId !== threadId) continue;
+        if (turnId && interaction.turnId !== turnId) continue;
+        this.makeUnavailable(interaction.id, "Codex turn completed before the question was answered");
+      }
+      for (const approval of this.nativeApprovals.values()) {
+        if (approval.status !== "pending" || approval.sessionId !== threadId) continue;
+        if (turnId && approval.turnId !== turnId) continue;
+        this.makeApprovalUnavailable(approval.id, "Codex turn completed before the approval was handled");
+      }
       const state = this.threadStates.get(threadId);
       if (typeof threadId === "string" && (!state?.activeTurnId || !turnId || state.activeTurnId === turnId)) {
         this.interruptRequests.delete(threadId);
@@ -639,6 +787,13 @@ export class CodexAppServerBridge extends EventEmitter {
     if (message.method === "thread/status/changed") {
       const threadId = message.params?.threadId;
       const status = message.params?.status;
+      if (typeof threadId === "string" && status?.type && status.type !== "active") {
+        for (const command of this.commands.values()) {
+          if (command.sessionId === threadId && command.turnId && ["sending", "delivered"].includes(command.status)) {
+            command.phoneOwnershipEndedAt = command.phoneOwnershipEndedAt || new Date().toISOString();
+          }
+        }
+      }
       if (status?.type === "notLoaded") {
         this.interruptRequests.delete(threadId);
         this.loadedThreads.delete(threadId);
@@ -691,6 +846,13 @@ export class CodexAppServerBridge extends EventEmitter {
       void this.send({ id: message.id, error: { code: -32602, message: "Invalid request_user_input payload" } });
       return;
     }
+    // This bridge observes every loaded thread. Only claim questions for turns
+    // started or steered by this phone channel; Desktop/CLI clients keep
+    // ownership of their own server requests.
+    if (!this.phoneOwnsTurn(normalized.threadId, normalized.turnId)) {
+      this.emit("unsupportedRequest", { method: "item/tool/requestUserInput" });
+      return;
+    }
     const duplicate = Array.from(this.interactions.values()).find((interaction) => (
       interaction.status === "pending"
       && String(interaction.rpcId) === String(message.id)
@@ -727,6 +889,66 @@ export class CodexAppServerBridge extends EventEmitter {
     this.interactions.set(interaction.id, interaction);
     this.audit("question_received", interaction);
     this.emit("question", this.publicInteraction(interaction));
+    this.emitStatus();
+  }
+
+  phoneOwnsTurn(sessionId, turnId) {
+    for (const command of this.commands.values()) {
+      if (command.sessionId === sessionId
+        && command.turnId === turnId
+        && !command.phoneOwnershipEndedAt
+        && ["sending", "delivered"].includes(command.status)) return true;
+    }
+    return false;
+  }
+
+  receiveNativeApproval(message) {
+    const normalized = normalizeNativeApproval(message.method, message.params);
+    if (!normalized) {
+      void this.send({ id: message.id, error: { code: -32602, message: "Invalid approval payload" } });
+      return;
+    }
+    // This bridge observes every loaded thread. Only claim approval requests
+    // for turns started or steered by this phone channel; desktop/CLI clients
+    // keep ownership of their own server requests.
+    if (!this.phoneOwnsTurn(normalized.sessionId, normalized.turnId)) {
+      this.emit("unsupportedRequest", { method: String(message.method) });
+      return;
+    }
+    const duplicate = Array.from(this.nativeApprovals.values()).find((approval) => (
+      approval.status === "pending"
+      && String(approval.rpcId) === String(message.id)
+      && approval.sessionId === normalized.sessionId
+    ));
+    if (duplicate) return;
+    const now = Date.now();
+    const approval = {
+      id: randomUUID(),
+      rpcId: message.id,
+      requestMethod: message.method,
+      eventId: null,
+      ...normalized,
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + NATIVE_APPROVAL_TIMEOUT_MS).toISOString(),
+      status: "pending",
+      delivery: "waiting",
+      decision: null,
+      decidedAt: null,
+      decidedBy: null,
+      timer: null,
+    };
+    approval.timer = setTimeout(() => void this.expireNativeApproval(approval.id), NATIVE_APPROVAL_TIMEOUT_MS);
+    approval.timer.unref?.();
+    this.nativeApprovals.set(approval.id, approval);
+    this.pruneNativeApprovals();
+    const runtime = this.threadStates.get(approval.sessionId);
+    this.setThreadState(approval.sessionId, {
+      status: "active",
+      activeTurnId: approval.turnId,
+      activeFlags: Array.from(new Set([...(runtime?.activeFlags || []), "waitingOnApproval"])),
+    });
+    this.audit("native_approval_received", approval, { requestMethod: approval.requestMethod });
+    this.emit("approval", this.publicApproval(approval));
     this.emitStatus();
   }
 
@@ -770,12 +992,22 @@ export class CodexAppServerBridge extends EventEmitter {
         this.interruptRequests.delete(threadId);
       }
     }
-    // Subscribe sequentially so a transport-level size failure can be bound to
-    // exactly one thread and quarantined without poisoning every live session.
-    for (const threadId of this.loadedThreads) {
-      if (!this.initialized) break;
-      await this.subscribeThread(threadId);
-    }
+    // Metadata-only resumes are bounded and independent. Running a small
+    // number in parallel keeps one slow session from blocking every other
+    // session while still limiting pressure on the App Server. If a transport
+    // fails with an oversized response, all in-flight metadata requests are
+    // quarantined because the wire cannot identify which response overflowed.
+    const pending = Array.from(this.loadedThreads).filter((threadId) => !this.subscribedThreads.has(threadId));
+    let nextIndex = 0;
+    const worker = async () => {
+      while (this.initialized) {
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= pending.length) return;
+        await this.subscribeThread(pending[index], { parallel: true });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(this.subscriptionConcurrency, pending.length) }, () => worker()));
     this.emit("loaded", Array.from(this.loadedThreads));
     this.emitStatus();
     return loaded;
@@ -793,15 +1025,16 @@ export class CodexAppServerBridge extends EventEmitter {
     this.loadedThreadRefreshTimer.unref?.();
   }
 
-  subscribeThread(threadId) {
+  subscribeThread(threadId, { parallel = false } = {}) {
     if (!this.initialized || !this.loadedThreads.has(threadId)) return Promise.resolve(false);
     if (this.subscribedThreads.has(threadId)) return Promise.resolve(true);
     if (this.subscribingThreads.has(threadId)) return this.subscribingThreads.get(threadId);
     if (this.quarantinedThreads.has(threadId)) return Promise.resolve(false);
+    if (this.handedOffThreads.has(threadId)) return Promise.resolve(false);
     const previousFailure = this.subscriptionFailures.get(threadId);
     if (previousFailure?.permanent) return Promise.resolve(false);
     if (previousFailure?.nextAttemptAt > Date.now()) return Promise.resolve(false);
-    const subscribing = this.requestMetadataResume(threadId)
+    const subscribing = this.requestMetadataResume(threadId, { queued: !parallel })
       .then((result) => {
         validateMetadataResume(result, threadId);
         this.subscribedThreads.add(threadId);
@@ -855,7 +1088,16 @@ export class CodexAppServerBridge extends EventEmitter {
     });
   }
 
-  async requestMetadataResume(threadId) {
+  async requestMetadataResume(threadId, { queued = true } = {}) {
+    if (!queued) {
+      this.activeSubscriptionThreadIds.add(threadId);
+      try {
+        if (!this.initialized || !this.transport) throw new Error("App-server is not connected");
+        return await this.request("thread/resume", metadataResumeParams(threadId));
+      } finally {
+        this.activeSubscriptionThreadIds.delete(threadId);
+      }
+    }
     const previous = this.resumeQueue;
     let release;
     this.resumeQueue = new Promise((resolve) => { release = resolve; });
@@ -998,9 +1240,15 @@ export class CodexAppServerBridge extends EventEmitter {
     this.subscribingThreads.delete(threadId);
     this.subscriptionFailures.delete(threadId);
     this.quarantinedThreads.delete(threadId);
+    this.handedOffThreads.delete(threadId);
     this.threadStates.delete(threadId);
     for (const [id, command] of this.commands) {
       if (command.sessionId === threadId) this.commands.delete(id);
+    }
+    for (const [id, approval] of this.nativeApprovals) {
+      if (approval.sessionId !== threadId) continue;
+      clearTimeout(approval.timer);
+      this.nativeApprovals.delete(id);
     }
     this.emitStatus();
   }
@@ -1014,6 +1262,9 @@ export class CodexAppServerBridge extends EventEmitter {
     }
     if (this.quarantinedThreads.has(threadId)) {
       throw httpError("This Codex session was isolated after an oversized live-control response", 409);
+    }
+    if (this.handedOffThreads.has(threadId)) {
+      throw httpError("This Codex session was handed off to the desktop and is phone read-only", 409);
     }
     const inFlight = this.subscribingThreads.get(threadId);
     if (inFlight) await inFlight;
@@ -1050,7 +1301,17 @@ export class CodexAppServerBridge extends EventEmitter {
     this.commands.delete(oldest);
   }
 
-  async createSession({ text, cwd = null, model = null, reasoningEffort = null, serviceTier = null, clientMessageId } = {}, device = null) {
+  pruneNativeApprovals() {
+    while (this.nativeApprovals.size > MAX_COMMAND_RECORDS) {
+      const oldestResolved = Array.from(this.nativeApprovals.entries())
+        .find(([, approval]) => approval.status !== "pending" && approval.status !== "sending");
+      if (!oldestResolved) return;
+      clearTimeout(oldestResolved[1].timer);
+      this.nativeApprovals.delete(oldestResolved[0]);
+    }
+  }
+
+  async createSession({ text, cwd = null, model = null, reasoningEffort = null, serviceTier = null, permissionProfile = null, confirmDangerFullAccess = false, clientMessageId } = {}, device = null) {
     const input = normalizePhoneInput(text);
     const workingDirectory = await validateWorkingDirectory(cwd);
     const commandId = normalizeClientMessageId(clientMessageId);
@@ -1058,6 +1319,7 @@ export class CodexAppServerBridge extends EventEmitter {
     if (!this.initialized || !this.transport) throw httpError("Live Codex connection is unavailable", 503);
     const defaults = (await this.codexStatus()).configuration;
     const selection = await this.validateModelSelection(model, reasoningEffort, serviceTier, { fallbackModel: defaults?.model });
+    const permissions = permissionSelection(permissionProfile, workingDirectory, confirmDangerFullAccess);
 
     const command = {
       id: commandId,
@@ -1073,6 +1335,9 @@ export class CodexAppServerBridge extends EventEmitter {
       model: selection.model || defaults?.model || null,
       reasoningEffort: selection.reasoningEffort || defaults?.reasoningEffort || null,
       serviceTier: selection.serviceTier || defaults?.serviceTier || null,
+      permissionProfile: permissions?.profile || null,
+      permissionMode: permissions?.permissionMode || defaults?.sandboxMode || null,
+      approvalPolicy: permissions?.approvalPolicy || defaults?.approvalPolicy || null,
       sentAt: new Date().toISOString(),
       decidedBy: device?.id || null,
     };
@@ -1085,6 +1350,7 @@ export class CodexAppServerBridge extends EventEmitter {
         ...(workingDirectory ? { cwd: workingDirectory } : {}),
         ...(selection.model ? { model: selection.model } : {}),
         ...(selection.serviceTier ? { serviceTier: selection.serviceTier } : {}),
+        ...(permissions ? { approvalPolicy: permissions.approvalPolicy, sandbox: permissions.sandbox } : {}),
         serviceName: "phone-control",
       });
       threadId = typeof started?.thread?.id === "string" ? started.thread.id : null;
@@ -1101,6 +1367,7 @@ export class CodexAppServerBridge extends EventEmitter {
         ...(selection.model ? { model: selection.model } : {}),
         ...(selection.reasoningEffort ? { effort: selection.reasoningEffort } : {}),
         ...(selection.serviceTier ? { serviceTier: selection.serviceTier } : {}),
+        ...(permissions ? { approvalPolicy: permissions.approvalPolicy, sandboxPolicy: permissions.sandboxPolicy } : {}),
       });
       if (typeof result?.turn?.id !== "string") throw new Error("Codex returned an invalid turn");
       command.turnId = result.turn.id;
@@ -1174,7 +1441,227 @@ export class CodexAppServerBridge extends EventEmitter {
     return JSON.parse(JSON.stringify(operation));
   }
 
-  async sendInput({ sessionId, expectedTurnId = null, text, images = [], cwd = null, model = null, reasoningEffort = null, serviceTier = null, clientMessageId } = {}, device = null) {
+  async releaseForDesktop({ sessionId, confirmSharedRelease = false } = {}, device = null) {
+    const threadId = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!threadId || threadId.length > 200) throw httpError("A valid session id is required", 400);
+    if (!this.initialized || !this.transport) throw httpError("Live Codex connection is unavailable", 503);
+    if (this.transportKind !== "managed-stdio") {
+      throw httpError("Immediate desktop handoff requires a Phone Control managed stdio App Server", 409);
+    }
+    if (this.handoffInProgress) throw httpError("Another desktop handoff is already in progress", 409);
+    if (!this.subscribedThreads.has(threadId)) throw httpError("This session is not currently controlled by Phone Control", 409);
+
+    const affectedSessionIds = Array.from(this.subscribedThreads);
+    for (const affectedId of affectedSessionIds) {
+      const state = this.threadStates.get(affectedId);
+      const hasPendingQuestion = this.list(affectedId).length > 0;
+      const hasPendingApproval = this.listApprovals(affectedId).length > 0;
+      const waiting = state?.activeFlags?.some((flag) => ["waitingOnApproval", "waitingOnUserInput", "interruptRequested"].includes(flag));
+      if (!state || state.status !== "idle" || state.activeTurnId || waiting || hasPendingQuestion || hasPendingApproval) {
+        throw httpError("Finish or stop every phone-controlled task and resolve its approvals before handing a session to the desktop", 409);
+      }
+    }
+    if (affectedSessionIds.length > 1 && !confirmSharedRelease) {
+      throw httpError("Desktop handoff will also release the other idle sessions held by Phone Control; confirmation is required", 409);
+    }
+
+    const transport = this.transport;
+    if (!transport.closed || typeof transport.closed.then !== "function") {
+      throw httpError("The managed App Server cannot confirm that its process has closed", 503);
+    }
+    const operation = {
+      id: randomUUID(),
+      sessionId: threadId,
+      affectedSessionIds,
+      action: "handoff",
+      status: "sending",
+      delivery: "sending",
+      requestedAt: new Date().toISOString(),
+      decidedBy: device?.id || null,
+    };
+    this.auditLifecycle("phone_session_handoff_sending", operation, { deviceName: device?.name || null });
+    this.handoffInProgress = true;
+    try {
+      const handedOffAt = new Date().toISOString();
+      this.handedOffThreads.set(threadId, {
+        at: handedOffAt,
+        reason: "This desktop session was handed off and is phone read-only",
+      });
+
+      this.clearTransport();
+      this.loadedThreads.clear();
+      this.subscribedThreads.clear();
+      this.subscribingThreads.clear();
+      this.subscriptionFailures.clear();
+      this.threadStates.clear();
+      this.interruptRequests.clear();
+      this.activeSubscriptionThreadId = null;
+      this.activeSubscriptionThreadIds.clear();
+      this.emit("loaded", []);
+      this.emitStatus();
+
+      let closeTimer;
+      try {
+        const closedDetails = await Promise.race([
+          transport.closed,
+          new Promise((_, reject) => {
+            closeTimer = setTimeout(() => reject(new Error("Timed out waiting for the managed App Server to close")), HANDOFF_CLOSE_TIMEOUT_MS);
+            closeTimer.unref?.();
+          }),
+        ]);
+        if (closedDetails?.error) throw closedDetails.error;
+      } catch (error) {
+        operation.status = "delivery_unknown";
+        operation.delivery = "unknown";
+        this.auditLifecycle("phone_session_handoff_unknown", operation, {
+          error: clampText(error.message, 300),
+          deviceName: device?.name || null,
+        });
+        throw httpError("Desktop handoff could not be confirmed; restart Phone Control before opening the session on the desktop", 503);
+      } finally {
+        clearTimeout(closeTimer);
+      }
+
+      operation.status = "released";
+      operation.delivery = "delivered";
+      operation.releasedAt = handedOffAt;
+      operation.bridgeReconnected = await this.connect();
+      this.auditLifecycle("phone_session_handed_off", operation, { deviceName: device?.name || null });
+      return JSON.parse(JSON.stringify(operation));
+    } finally {
+      this.handoffInProgress = false;
+      this.emitStatus();
+    }
+  }
+
+  async rollbackUnsafeReclaim() {
+    const transport = this.transport;
+    if (!transport?.closed || typeof transport.closed.then !== "function") {
+      throw new Error("The managed App Server cannot confirm reclaim rollback");
+    }
+    this.clearTransport();
+    this.loadedThreads.clear();
+    this.subscribedThreads.clear();
+    this.subscribingThreads.clear();
+    this.subscriptionFailures.clear();
+    this.threadStates.clear();
+    this.interruptRequests.clear();
+    this.activeSubscriptionThreadId = null;
+    this.activeSubscriptionThreadIds.clear();
+    this.emit("loaded", []);
+    this.emitStatus();
+
+    let closeTimer;
+    try {
+      const closedDetails = await Promise.race([
+        transport.closed,
+        new Promise((_, reject) => {
+          closeTimer = setTimeout(() => reject(new Error("Timed out releasing the unsafe reclaimed session")), HANDOFF_CLOSE_TIMEOUT_MS);
+          closeTimer.unref?.();
+        }),
+      ]);
+      if (closedDetails?.error) throw closedDetails.error;
+    } finally {
+      clearTimeout(closeTimer);
+    }
+    if (!await this.connect()) throw new Error("Phone Control could not restart its managed App Server after reclaim rollback");
+  }
+
+  async reclaimForPhone({ sessionId } = {}, device = null) {
+    const threadId = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!threadId || threadId.length > 200) throw httpError("A valid session id is required", 400);
+    if (!this.handedOffThreads.has(threadId)) throw httpError("This session has not been handed off to the desktop", 409);
+    if (!this.initialized || !this.transport) throw httpError("Live Codex connection is unavailable", 503);
+    if (this.transportKind !== "managed-stdio") {
+      throw httpError("Phone reclaim requires a Phone Control managed stdio App Server", 409);
+    }
+    if (this.handoffInProgress || this.reclaimingThreads.has(threadId)) {
+      throw httpError("A session ownership change is already in progress", 409);
+    }
+
+    const operation = {
+      id: randomUUID(),
+      sessionId: threadId,
+      action: "reclaim",
+      status: "sending",
+      delivery: "sending",
+      requestedAt: new Date().toISOString(),
+      decidedBy: device?.id || null,
+    };
+    this.auditLifecycle("phone_session_reclaim_sending", operation, { deviceName: device?.name || null });
+    this.reclaimingThreads.add(threadId);
+    try {
+      const read = await this.request("thread/read", { threadId, includeTurns: false });
+      if (read?.thread?.id !== threadId) throw httpError("Codex read a different session", 409);
+      const observed = runtimeFromThread(read.thread);
+      if (!observed || !["notLoaded", "idle"].includes(observed.status)) {
+        throw httpError(observed?.status === "active"
+          ? "The desktop session is still active; finish its turn and fully close the desktop app before trying again"
+          : "This Codex session is not in a safe state for phone reclaim", 409);
+      }
+
+      let resumed;
+      try {
+        resumed = await this.requestMetadataResume(threadId);
+      } catch (error) {
+        const message = String(error?.message || "");
+        if (/active writer|another (?:application|app|client)|already (?:open|loaded)|in use|writer/i.test(message)) {
+          throw httpError("The desktop still owns this session; fully close it on the computer before trying again", 409);
+        }
+        if (/not found|no rollout/i.test(message)) throw httpError("This Codex session can no longer be resumed", 404);
+        throw httpError(`Codex could not return this session to the phone: ${message}`, 409);
+      }
+      try {
+        validateMetadataResume(resumed, threadId);
+        const state = runtimeFromThread(resumed.thread, resumed.initialTurnsPage);
+        if (!state || state.status !== "idle") {
+          throw httpError("The session became active before Phone Control could reclaim it; it remains phone read-only", 409);
+        }
+
+        this.loadedThreads.add(threadId);
+        this.subscribedThreads.add(threadId);
+        this.subscriptionFailures.delete(threadId);
+        this.handedOffThreads.delete(threadId);
+        this.setThreadState(threadId, state);
+      } catch (error) {
+        try {
+          await this.rollbackUnsafeReclaim();
+        } catch (rollbackError) {
+          throw httpError(`Phone reclaim was rejected and its writer rollback could not be confirmed: ${rollbackError.message}`, 503);
+        }
+        if (error.code === "ERR_RESUME_HISTORY_INCLUDED") {
+          throw httpError("This App Server cannot reclaim the session without loading full history; its writer was released again", 409);
+        }
+        throw error.statusCode
+          ? error
+          : httpError("Codex resumed a different session; its writer was released again", 409);
+      }
+      operation.status = "acquired";
+      operation.delivery = "delivered";
+      operation.acquiredAt = new Date().toISOString();
+      this.auditLifecycle("phone_session_reclaimed", operation, { deviceName: device?.name || null });
+      this.emit("subscribed", threadId);
+      this.emitStatus();
+      return JSON.parse(JSON.stringify(operation));
+    } catch (error) {
+      const message = String(error?.message || "");
+      const surfacedError = !error.statusCode && /active writer|another (?:application|app|client)|already (?:open|loaded)|in use|writer/i.test(message)
+        ? httpError("The desktop still owns this session; fully close it on the computer before trying again", 409)
+        : error;
+      operation.status = surfacedError.statusCode && surfacedError.statusCode < 500 ? "rejected" : "delivery_unknown";
+      operation.delivery = surfacedError.statusCode && surfacedError.statusCode < 500 ? "not_delivered" : "unknown";
+      this.auditLifecycle(operation.status === "rejected" ? "phone_session_reclaim_rejected" : "phone_session_reclaim_unknown", operation, {
+        error: clampText(surfacedError.message, 300),
+        deviceName: device?.name || null,
+      });
+      throw surfacedError;
+    } finally {
+      this.reclaimingThreads.delete(threadId);
+      this.emitStatus();
+    }
+  }
+
+  async sendInput({ sessionId, expectedTurnId = null, text, images = [], cwd = null, model = null, reasoningEffort = null, serviceTier = null, permissionProfile = null, confirmDangerFullAccess = false, clientMessageId } = {}, device = null) {
     const threadId = typeof sessionId === "string" ? sessionId.trim() : "";
     if (!threadId || threadId.length > 200) throw httpError("A valid session id is required", 400);
     const input = normalizePhoneInput(text, images);
@@ -1208,13 +1695,16 @@ export class CodexAppServerBridge extends EventEmitter {
       action = "start";
       turnId = null;
     }
-    if (action === "steer" && (cwd || model || reasoningEffort || serviceTier)) {
-      throw httpError("Workspace, model, reasoning effort, and Fast can only change when starting a new turn", 409);
+    if (action === "steer" && (cwd || model || reasoningEffort || serviceTier || permissionProfile)) {
+      throw httpError("Workspace, model, reasoning effort, Fast, and permissions can only change when starting a new turn", 409);
     }
     const workingDirectory = action === "start" ? await validateWorkingDirectory(cwd) : null;
     const selection = action === "start"
       ? await this.validateModelSelection(model, reasoningEffort, serviceTier)
       : { model: null, reasoningEffort: null, serviceTier: null };
+    const permissions = action === "start"
+      ? permissionSelection(permissionProfile, workingDirectory, confirmDangerFullAccess)
+      : null;
 
     const command = {
       id: commandId,
@@ -1229,6 +1719,9 @@ export class CodexAppServerBridge extends EventEmitter {
       model: selection.model,
       reasoningEffort: selection.reasoningEffort,
       serviceTier: selection.serviceTier,
+      permissionProfile: permissions?.profile || null,
+      permissionMode: permissions?.permissionMode || null,
+      approvalPolicy: permissions?.approvalPolicy || null,
       cwd: workingDirectory,
       sentAt: new Date().toISOString(),
       decidedBy: device?.id || null,
@@ -1254,6 +1747,7 @@ export class CodexAppServerBridge extends EventEmitter {
           ...(selection.reasoningEffort ? { effort: selection.reasoningEffort } : {}),
           ...(selection.serviceTier ? { serviceTier: selection.serviceTier } : {}),
           ...(workingDirectory ? { cwd: workingDirectory } : {}),
+          ...(permissions ? { approvalPolicy: permissions.approvalPolicy, sandboxPolicy: permissions.sandboxPolicy } : {}),
         });
         if (typeof result?.turn?.id !== "string") throw new Error("Codex returned an invalid turn");
         turnId = result.turn.id;
@@ -1389,6 +1883,111 @@ export class CodexAppServerBridge extends EventEmitter {
     return safe;
   }
 
+  async decideApproval(id, { decision, sessionId, turnId } = {}, device = null) {
+    const approval = this.nativeApprovals.get(id);
+    if (!approval) throw httpError("Approval not found", 404);
+    if (approval.status !== "pending") throw httpError("Approval was already resolved or is no longer available", 409);
+    if (!this.initialized || !this.transport) throw httpError("Live Codex connection is unavailable", 503);
+    if (!new Set(["allow", "deny"]).has(decision)) throw httpError("Decision must be allow or deny", 400);
+    if (sessionId !== approval.sessionId || turnId !== approval.turnId) {
+      throw httpError("Approval binding no longer matches this session and turn", 409);
+    }
+    if (Date.parse(approval.expiresAt) <= Date.now()) {
+      await this.expireNativeApproval(id);
+      throw httpError("Approval expired", 410);
+    }
+    approval.status = "sending";
+    approval.delivery = "sending";
+    const wireDecision = decision === "allow" ? "accept" : "decline";
+    const result = approval.requestMethod === "item/permissions/requestApproval"
+      ? { permissions: decision === "allow" ? approval.requestedPermissions || {} : {}, scope: "turn" }
+      : { decision: wireDecision };
+    try {
+      await this.send({ id: approval.rpcId, result });
+    } catch (error) {
+      approval.status = "delivery_unknown";
+      approval.delivery = "unknown";
+      clearTimeout(approval.timer);
+      approval.timer = null;
+      this.audit("native_approval_delivery_unknown", approval, { error: clampText(error.message, 300) });
+      this.emit("approvalUnavailable", this.publicApproval(approval));
+      this.emitStatus();
+      throw httpError("Approval delivery could not be confirmed; it will not be retried automatically", 503);
+    }
+    clearTimeout(approval.timer);
+    approval.timer = null;
+    approval.status = decision === "allow" ? "allowed" : "denied";
+    approval.delivery = "delivered";
+    approval.decision = decision;
+    approval.decidedAt = new Date().toISOString();
+    approval.decidedBy = device?.id || null;
+    this.clearApprovalWaitingFlag(approval.sessionId);
+    this.audit("native_approval_delivered", approval, { deviceName: device?.name || null });
+    const safe = this.publicApproval(approval);
+    this.emit("approvalResolved", safe);
+    this.emitStatus();
+    this.pruneNativeApprovals();
+    return safe;
+  }
+
+  async expireNativeApproval(id) {
+    const approval = this.nativeApprovals.get(id);
+    if (!approval || approval.status !== "pending") return;
+    clearTimeout(approval.timer);
+    approval.timer = null;
+    approval.status = "sending";
+    approval.delivery = "sending";
+    approval.decision = "deny";
+    approval.decidedAt = new Date().toISOString();
+    const result = approval.requestMethod === "item/permissions/requestApproval"
+      ? { permissions: {}, scope: "turn" }
+      : { decision: "decline" };
+    try {
+      await this.send({ id: approval.rpcId, result });
+    } catch (error) {
+      approval.status = "delivery_unknown";
+      approval.delivery = "unknown";
+      approval.unavailableReason = "Approval expired, but denial delivery could not be confirmed";
+      this.clearApprovalWaitingFlag(approval.sessionId);
+      this.audit("native_approval_delivery_unknown", approval, { error: clampText(error.message, 300) });
+      this.emit("approvalUnavailable", this.publicApproval(approval));
+      this.emitStatus();
+      this.pruneNativeApprovals();
+      return;
+    }
+    approval.status = "expired";
+    approval.delivery = "delivered";
+    this.clearApprovalWaitingFlag(approval.sessionId);
+    this.audit("native_approval_expired", approval);
+    this.emit("approvalResolved", this.publicApproval(approval));
+    this.emitStatus();
+    this.pruneNativeApprovals();
+  }
+
+  makeApprovalUnavailable(id, reason) {
+    const approval = this.nativeApprovals.get(id);
+    if (!approval || approval.status !== "pending") return;
+    clearTimeout(approval.timer);
+    approval.timer = null;
+    approval.status = "unavailable";
+    approval.delivery = "not_delivered";
+    approval.unavailableReason = reason;
+    approval.decidedAt = new Date().toISOString();
+    this.clearApprovalWaitingFlag(approval.sessionId);
+    this.audit("native_approval_unavailable", approval, { reason });
+    this.emit("approvalUnavailable", this.publicApproval(approval));
+    this.emitStatus();
+    this.pruneNativeApprovals();
+  }
+
+  clearApprovalWaitingFlag(sessionId) {
+    const state = this.threadStates.get(sessionId);
+    if (!state?.activeFlags?.includes("waitingOnApproval")) return;
+    this.setThreadState(sessionId, {
+      activeFlags: state.activeFlags.filter((flag) => flag !== "waitingOnApproval"),
+    });
+  }
+
   makeUnavailable(id, reason) {
     const interaction = this.interactions.get(id);
     if (!interaction || interaction.status !== "pending") return;
@@ -1407,10 +2006,20 @@ export class CodexAppServerBridge extends EventEmitter {
     return JSON.parse(JSON.stringify({ ...safe, canRespond: interaction.status === "pending" && this.initialized }));
   }
 
+  publicApproval(approval) {
+    const { rpcId, requestMethod, requestedPermissions, timer, ...safe } = approval;
+    return JSON.parse(JSON.stringify({ ...safe, source: "app-server", canRespond: approval.status === "pending" && this.initialized }));
+  }
+
   handleDisconnect(error) {
     if (!this.transport && !this.connected && !this.initialized) return;
-    const oversizedThreadId = isOversizedTransportError(error) ? this.activeSubscriptionThreadId : null;
-    if (oversizedThreadId) {
+    const oversizedThreadIds = isOversizedTransportError(error)
+      ? new Set([
+        ...this.activeSubscriptionThreadIds,
+        ...(this.activeSubscriptionThreadId ? [this.activeSubscriptionThreadId] : []),
+      ])
+      : new Set();
+    for (const oversizedThreadId of oversizedThreadIds) {
       this.quarantinedThreads.set(oversizedThreadId, {
         reason: "Live control was isolated because this thread produced an oversized App Server message",
         at: new Date().toISOString(),
@@ -1420,6 +2029,9 @@ export class CodexAppServerBridge extends EventEmitter {
     for (const interaction of this.interactions.values()) {
       if (interaction.status === "pending") this.makeUnavailable(interaction.id, "Live Codex connection closed");
     }
+    for (const approval of this.nativeApprovals.values()) {
+      if (approval.status === "pending") this.makeApprovalUnavailable(approval.id, "Live Codex connection closed");
+    }
     this.loadedThreads.clear();
     this.subscribedThreads.clear();
     this.subscribingThreads.clear();
@@ -1427,6 +2039,7 @@ export class CodexAppServerBridge extends EventEmitter {
     this.threadStates.clear();
     this.interruptRequests.clear();
     this.activeSubscriptionThreadId = null;
+    this.activeSubscriptionThreadIds.clear();
     this.emit("loaded", []);
     this.emitStatus();
     if (error && !this.stopped) this.emit("warning", error);
@@ -1449,6 +2062,8 @@ export class CodexAppServerBridge extends EventEmitter {
     this.modelCatalogLoading = null;
     this.approvalConfigurationCache = null;
     this.interruptRequests.clear();
+    this.activeSubscriptionThreadId = null;
+    this.activeSubscriptionThreadIds.clear();
     for (const pending of this.clientRequests.values()) {
       clearTimeout(pending.timer);
       pending.reject(new Error("App-server connection closed"));
@@ -1507,6 +2122,9 @@ export class CodexAppServerBridge extends EventEmitter {
       model: command.model,
       reasoningEffort: command.reasoningEffort,
       serviceTier: command.serviceTier,
+      permissionProfile: command.permissionProfile,
+      permissionMode: command.permissionMode,
+      approvalPolicy: command.approvalPolicy,
       cwd: command.cwd,
       decidedBy: command.decidedBy,
       ...extra,
@@ -1564,8 +2182,9 @@ export class CodexAppServerBridge extends EventEmitter {
     this.reconnectTimer = null;
     this.clearTransport();
     for (const interaction of this.interactions.values()) clearTimeout(interaction.timer);
+    for (const approval of this.nativeApprovals.values()) clearTimeout(approval.timer);
     await this.auditQueue;
   }
 }
 
-export { normalizeQuestions, normalizeAnswers };
+export { normalizeQuestions, normalizeAnswers, normalizeNativeApproval, permissionSelection };

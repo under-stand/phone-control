@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#f5f3ed">
+    <meta name="description" content="通过 Phone Control 操作本机 Chrome 已打开的网页。">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css?v=63">
+    <link rel="stylesheet" href="/browser.css?v=63">
+    <title>浏览器 · Phone Control</title>
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+    <main class="shell browser-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="返回 Phone Control 任务">
+          <span class="brand-mark"><i></i><i></i><i></i></span>
+          <span><strong>Phone Control</strong><small>BROWSER BRIDGE</small></span>
+        </a>
+        <div class="top-actions">
+          <a class="device-button browser-nav-button" href="/">任务</a>
+          <button class="connection browser-connection" id="browser-connection" data-state="connecting" type="button">
+            <span></span><b>检查中</b>
+          </button>
+        </div>
+      </header>
+
+      <section class="browser-intro">
+        <div><p class="eyebrow">EXISTING CHROME TABS</p><h1>浏览器</h1></div>
+        <p>直接操作电脑上已经打开的 Chrome 网页。</p>
+      </section>
+
+      <section class="extension-empty" id="extension-empty" hidden>
+        <span class="extension-orbit"><i></i></span>
+        <h2>等待电脑端浏览器扩展</h2>
+        <p>Phone Control 服务已经就绪。只需在电脑 Chrome 中安装一次“Phone Control Browser Bridge”，之后手机会自动连接。</p>
+        <button class="primary-action" id="retry-extension" type="button">重新检查</button>
+        <small>扩展只连接本机 127.0.0.1，不直接暴露到网络。</small>
+      </section>
+
+      <section class="browser-console" id="browser-console" hidden>
+        <div class="browser-toolbar-card">
+          <label class="tab-picker">当前标签页
+            <span class="select-shell"><select id="browser-tabs" aria-label="选择 Chrome 标签页"></select><img src="/icons/caret-down.svg" alt=""></span>
+          </label>
+          <div class="tab-actions">
+            <button id="new-browser-tab" type="button">新标签</button>
+            <button id="close-browser-tab" class="danger-quiet" type="button">关闭</button>
+          </div>
+          <div class="nav-buttons" aria-label="网页导航">
+            <button id="browser-back" type="button" aria-label="后退">←</button>
+            <button id="browser-forward" type="button" aria-label="前进">→</button>
+            <button id="browser-reload" type="button" aria-label="刷新">↻</button>
+            <form id="browser-address-form">
+              <label class="sr-only" for="browser-address">网页地址</label>
+              <input id="browser-address" type="text" inputmode="url" autocomplete="off" placeholder="输入网址">
+              <button type="submit">打开</button>
+            </form>
+          </div>
+        </div>
+
+        <div class="frame-card" id="frame-card">
+          <div class="frame-title-row">
+            <div><strong id="frame-title">准备画面</strong><small id="frame-url">选择一个普通网页</small></div>
+            <button id="capture-browser" type="button">刷新画面</button>
+          </div>
+          <div class="browser-frame" id="browser-frame" aria-label="可直接点按操作的网页画面">
+            <img id="browser-frame-image" alt="电脑 Chrome 当前网页截图" draggable="false" hidden>
+            <div class="frame-placeholder" id="frame-placeholder"><span></span><p>正在取得网页画面</p></div>
+            <div class="frame-busy" id="frame-busy" hidden><span></span></div>
+          </div>
+          <p class="frame-help">轻触画面点击；在画面上上下滑动即可滚动网页。</p>
+          <div class="quick-scroll">
+            <button id="scroll-up" type="button">上滚</button>
+            <button id="scroll-down" type="button">下滚</button>
+          </div>
+        </div>
+
+        <div class="browser-input-card">
+          <label for="browser-text">输入到网页当前焦点</label>
+          <div><input id="browser-text" type="text" autocomplete="off" enterkeyhint="send" placeholder="先点网页输入框，再在这里输入"><button id="browser-send-text" type="button">输入</button><button id="browser-enter" type="button">回车</button></div>
+        </div>
+      </section>
+
+      <p class="browser-error" id="browser-error" role="alert" hidden></p>
+    </main>
+    <script src="/browser.js?v=63" type="module"></script>
+  </body>
+</html>

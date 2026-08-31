@@ -15,6 +15,9 @@ import {
 } from "./auth.mjs";
 import { ApprovalBroker } from "./approval-broker.mjs";
 import { CodexAppServerBridge } from "./app-server-bridge.mjs";
+import { BrowserActionReplayStore } from "./browser-action-replay.mjs";
+import { BrowserControlLeaseStore } from "./browser-control-lease.mjs";
+import { BrowserExtensionBroker } from "./browser-extension-broker.mjs";
 import { CompletionPolicy } from "./completion-policy.mjs";
 import { DeviceStore } from "./device-store.mjs";
 import { ImageStore, MAX_IMAGE_BYTES } from "./image-store.mjs";
@@ -26,11 +29,13 @@ import { nodeRuntimeStatus } from "./service-diagnostics.mjs";
 import { SessionStore } from "./session-store.mjs";
 import { TaskTitleGenerator } from "./task-title-generator.mjs";
 import { drainSpool } from "./spool.mjs";
+import { PHONE_CONTROL_VERSION } from "./version.mjs";
 
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MAX_BODY = 1024 * 1024;
+const MAX_BROWSER_BODY = 8 * 1024 * 1024;
 const PAIRING_TTL_MS = 10 * 60_000;
-const VERSION = "0.8.0";
+const VERSION = PHONE_CONTROL_VERSION;
 
 const MIME = {
   ".css": "text/css; charset=utf-8",
@@ -74,12 +79,12 @@ function json(response, status, body, headers = {}) {
   response.end(encoded.payload);
 }
 
-async function readJson(request) {
+async function readJson(request, maxBytes = MAX_BODY) {
   const chunks = [];
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > MAX_BODY) {
+    if (size > maxBytes) {
       const error = new Error("Request body is too large");
       error.statusCode = 413;
       throw error;
@@ -94,6 +99,23 @@ async function readJson(request) {
     error.statusCode = 400;
     throw error;
   }
+}
+
+function isLoopbackAddress(address) {
+  return ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(String(address || "").toLowerCase());
+}
+
+function browserExtensionOrigin(request) {
+  const origin = String(request.headers.origin || "");
+  return /^chrome-extension:\/\/[a-p]{32}$/.test(origin) ? origin : null;
+}
+
+function isBrowserExtensionRequest(request) {
+  return Boolean(
+    isLoopbackAddress(request.socket.remoteAddress)
+    && request.headers["x-phone-control-browser-extension"] === "1"
+    && browserExtensionOrigin(request),
+  );
 }
 
 async function readBuffer(request, maxBytes) {
@@ -126,6 +148,9 @@ function publicAppServerStatus(status = {}) {
     unavailableThreadCount: status.unavailableThreads?.length || 0,
     retryingSubscriptions: status.retryingSubscriptions || 0,
     pendingQuestions: status.pendingQuestions || 0,
+    pendingApprovals: status.pendingApprovals || 0,
+    handoffSupported: Boolean(status.handoffSupported),
+    handedOffThreadCount: status.handedOffThreads?.length || 0,
   };
 }
 
@@ -154,6 +179,8 @@ export async function createPhoneControlServer({
   runtimeInspector = inspectCodexRuntime,
   rolloutScanner,
   taskTitleGenerator,
+  browserExtensionBroker,
+  browserActionReplay,
 } = {}) {
   if (!config?.token) throw new Error("Phone Control requires an access token");
   const paths = dataPaths(config.dataDir);
@@ -184,6 +211,8 @@ export async function createPhoneControlServer({
       model: command.model || null,
       reasoningEffort: command.reasoningEffort || null,
       serviceTier: command.serviceTier || null,
+      permissionMode: command.permissionMode || null,
+      approvalPolicy: command.approvalPolicy || null,
       message: { role: "user", text },
     }, { persist: false });
   };
@@ -204,6 +233,9 @@ export async function createPhoneControlServer({
     auditLogPath: paths.auditLog,
   });
   approvals.on("warning", (error) => store.emit("warning", error));
+  const browser = browserExtensionBroker || new BrowserExtensionBroker();
+  const browserLeases = new BrowserControlLeaseStore();
+  const browserReplay = browserActionReplay || new BrowserActionReplayStore();
   approvals.on("resolved", (approval) => {
     store.ingest({
       eventId: `approval-${approval.id}-${approval.status}`,
@@ -235,9 +267,18 @@ export async function createPhoneControlServer({
       subscribedThreads: status.subscribedThreads,
       threadStates: status.threadStates,
       unavailableThreadReasons: status.unavailableThreadReasons,
+      handedOffThreads: status.handedOffThreads,
+      handoffSupported: status.handoffSupported,
     });
-    bridge.on("status", syncBridgeState);
-    bridge.on("loaded", () => syncBridgeState());
+    bridge.on("status", (status) => {
+      syncBridgeState(status);
+      if (!status.connected || !status.initialized) serviceReady = false;
+    });
+    bridge.on("loaded", () => {
+      syncBridgeState();
+      const status = bridge.status();
+      serviceReady = Boolean(status.connected && status.initialized);
+    });
     bridge.on("question", (interaction) => {
       store.ingest({
         eventId: `question-${interaction.id}`,
@@ -249,6 +290,46 @@ export async function createPhoneControlServer({
         kind: "question",
         tool: { name: "request_user_input", summary: interaction.questions[0]?.question || null },
         interaction,
+      }, { persist: false });
+    });
+    bridge.on("approval", (approval) => {
+      store.ingest({
+        eventId: `native-approval-${approval.id}`,
+        source: "app-server",
+        provider: "codex",
+        sessionId: approval.sessionId,
+        turnId: approval.turnId,
+        at: approval.createdAt,
+        kind: "permission_request",
+        tool: approval.tool,
+        reason: approval.reason,
+        cwd: approval.cwd,
+        approvalDetails: approval.details,
+        approval: { id: approval.id, expiresAt: approval.expiresAt, source: "app-server" },
+      }, { persist: false });
+    });
+    bridge.on("approvalResolved", (approval) => {
+      store.ingest({
+        eventId: `native-approval-${approval.id}-${approval.status}`,
+        source: "phone-control",
+        provider: "codex",
+        sessionId: approval.sessionId,
+        turnId: approval.turnId,
+        at: approval.decidedAt || new Date().toISOString(),
+        kind: "approval_resolved",
+        decision: approval.decision,
+      }, { persist: false });
+    });
+    bridge.on("approvalUnavailable", (approval) => {
+      store.ingest({
+        eventId: `native-approval-${approval.id}-${approval.status}`,
+        source: "phone-control",
+        provider: "codex",
+        sessionId: approval.sessionId,
+        turnId: approval.turnId,
+        at: approval.decidedAt || new Date().toISOString(),
+        kind: "approval_expired",
+        reason: approval.unavailableReason || "手机审批通道已失效，请回到原 Codex 客户端处理",
       }, { persist: false });
     });
     bridge.on("answered", (interaction) => {
@@ -291,6 +372,8 @@ export async function createPhoneControlServer({
         model: command.model || null,
         reasoningEffort: command.reasoningEffort || null,
         serviceTier: command.serviceTier || null,
+        permissionMode: command.permissionMode || null,
+        approvalPolicy: command.approvalPolicy || null,
       }, { persist: false });
     });
     bridge.on("interrupt", (operation) => {
@@ -347,6 +430,7 @@ export async function createPhoneControlServer({
   const visibleSessionIds = new Set(store.list({ taskKind: "user" }).map((session) => session.id));
   const visibleSessions = () => store.list({ taskKind: "user" });
   let pushReady = false;
+  let serviceReady = false;
   const publishSession = (session) => {
     if (session.taskKind === "user") {
       visibleSessionIds.add(session.id);
@@ -434,6 +518,20 @@ export async function createPhoneControlServer({
     securityHeaders(response);
     const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
     try {
+      if (url.pathname.startsWith("/api/internal/browser/") && isLoopbackAddress(request.socket.remoteAddress)) {
+        const origin = browserExtensionOrigin(request);
+        if (origin) {
+          response.setHeader("access-control-allow-origin", origin);
+          response.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+          response.setHeader("access-control-allow-headers", "content-type, x-phone-control-browser-extension");
+          response.setHeader("vary", "origin");
+        }
+        if (request.method === "OPTIONS" && origin) {
+          response.writeHead(204, { "cache-control": "no-store" });
+          response.end();
+          return;
+        }
+      }
       let device = devices.authenticate(cookieCredential(request));
       if (!device && tokenMatches(cookieCredential(request), config.token)) {
         const migrated = pairDevice(request, "Migrated browser");
@@ -442,7 +540,7 @@ export async function createPhoneControlServer({
       }
 
       if (request.method === "GET" && url.pathname === "/api/health") {
-        json(response, 200, { ok: true, version: VERSION, authenticated: Boolean(device) });
+        json(response, 200, { ok: true, ready: serviceReady, version: VERSION, authenticated: Boolean(device) });
         return;
       }
 
@@ -559,6 +657,41 @@ export async function createPhoneControlServer({
         return;
       }
 
+      if (request.method === "POST" && url.pathname === "/api/internal/browser/hello") {
+        if (!isBrowserExtensionRequest(request)) {
+          json(response, 403, { error: "Browser extension connection is local-only" });
+          return;
+        }
+        const body = await readJson(request);
+        json(response, 200, browser.connect({ ...body, origin: browserExtensionOrigin(request) }));
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/internal/browser/commands") {
+        if (!isBrowserExtensionRequest(request)) {
+          json(response, 403, { error: "Browser extension polling is local-only" });
+          return;
+        }
+        const delivery = await browser.poll(
+          url.searchParams.get("clientId"),
+          browserExtensionOrigin(request),
+          url.searchParams.get("wait"),
+        );
+        json(response, 200, delivery);
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/internal/browser/results") {
+        if (!isBrowserExtensionRequest(request)) {
+          json(response, 403, { error: "Browser extension results are local-only" });
+          return;
+        }
+        const body = await readJson(request, MAX_BROWSER_BODY);
+        const accepted = browser.complete(body.clientId, browserExtensionOrigin(request), body);
+        json(response, accepted ? 202 : 404, accepted ? { ok: true } : { error: "Browser command not found" });
+        return;
+      }
+
       if (request.method === "GET" && url.pathname.startsWith("/api/internal/approvals/")) {
         if (!isInternalAuthorized(request, config.token)) {
           json(response, 403, { error: "Approval wait is local-only" });
@@ -581,7 +714,74 @@ export async function createPhoneControlServer({
           json(response, 403, { error: "Missing client confirmation header" });
           return;
         }
+        browserLeases.clearDevice(device.id);
+        browserReplay.clearActor(device.id);
         json(response, 200, { ok: true }, { "set-cookie": cookieFor(request, "", { clear: true }) });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/browser") {
+        json(response, 200, browser.status(device.id, browserLeases));
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/browser/frame") {
+        const frame = browser.frameImage();
+        if (!frame) {
+          json(response, 404, { error: "No browser screenshot is available" });
+          return;
+        }
+        const requestedFrameId = url.searchParams.get("frameId");
+        if (requestedFrameId && requestedFrameId !== frame.frameId) {
+          json(response, 409, { error: "The screenshot is stale; refresh and try again", code: "stale_frame" });
+          return;
+        }
+        const separator = frame.dataUrl.indexOf(",");
+        const payload = Buffer.from(frame.dataUrl.slice(separator + 1), "base64");
+        response.writeHead(200, {
+          "content-type": frame.dataUrl.startsWith("data:image/png") ? "image/png" : "image/jpeg",
+          "content-length": payload.length,
+          "cache-control": "no-store",
+          "x-browser-frame-id": frame.frameId,
+          "x-browser-page-generation": String(frame.pageGeneration),
+        });
+        response.end(payload);
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/browser/control") {
+        if (!isSameOriginWrite(request)) {
+          json(response, 403, { error: "Missing client confirmation header" });
+          return;
+        }
+        json(response, 200, { control: browserLeases.acquire(device.id) });
+        return;
+      }
+
+      if (request.method === "DELETE" && url.pathname === "/api/browser/control") {
+        if (!isSameOriginWrite(request)) {
+          json(response, 403, { error: "Missing client confirmation header" });
+          return;
+        }
+        const token = request.headers["x-phone-control-browser-lease"];
+        json(response, 200, { released: browserLeases.release(device.id, token) });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/browser/actions") {
+        if (!isSameOriginWrite(request)) {
+          json(response, 403, { error: "Missing client confirmation header" });
+          return;
+        }
+        browserLeases.validate(device.id, request.headers["x-phone-control-browser-lease"]);
+        const action = await readJson(request);
+        const result = await browserReplay.execute({
+          scopeId: "chrome",
+          actorId: device.id,
+          action,
+          run: (normalized) => browser.invoke(normalized),
+        });
+        json(response, 200, { result, browser: browser.status(device.id, browserLeases) });
         return;
       }
 
@@ -621,6 +821,7 @@ export async function createPhoneControlServer({
         const phoneApprovals = phoneApprovalRouting();
         json(response, 200, {
           version: VERSION,
+          ready: serviceReady,
           mode: phoneApprovals.enabled ? "approve" : "observe",
           sessions: visibleSessions().length,
           rolloutScanner: scanRollouts,
@@ -628,6 +829,7 @@ export async function createPhoneControlServer({
           approvalsEnabled: phoneApprovals.enabled,
           approvalsConfigured: phoneApprovals.configured,
           approvalRoutingReason: phoneApprovals.reason,
+          nativeApprovalsEnabled: typeof bridge?.decideApproval === "function",
           interactionsEnabled: Boolean(bridge),
           codex,
           runtime: { ...runtime, phoneControlNode: nodeRuntimeStatus() },
@@ -753,6 +955,8 @@ export async function createPhoneControlServer({
           json(response, 404, { error: "Device not found" });
           return;
         }
+        browserLeases.clearDevice(id);
+        browserReplay.clearActor(id);
         await push.unsubscribe(id);
         const headers = id === device.id ? { "set-cookie": cookieFor(request, "", { clear: true }) } : {};
         json(response, 200, { ok: true, revokedDeviceId: id }, headers);
@@ -760,7 +964,8 @@ export async function createPhoneControlServer({
       }
 
       if (request.method === "GET" && url.pathname === "/api/approvals") {
-        json(response, 200, { enabled: approvals.enabled, approvals: approvals.list() });
+        const nativeApprovals = typeof bridge?.listApprovals === "function" ? bridge.listApprovals() : [];
+        json(response, 200, { enabled: approvals.enabled || Boolean(bridge), approvals: [...approvals.list(), ...nativeApprovals] });
         return;
       }
 
@@ -771,7 +976,14 @@ export async function createPhoneControlServer({
         }
         const id = decodeURIComponent(url.pathname.slice("/api/approvals/".length, -"/decision".length));
         const body = await readJson(request);
-        const approval = approvals.decide(id, body.decision, device);
+        const nativeApproval = typeof bridge?.getApproval === "function" ? bridge.getApproval(id) : null;
+        const approval = nativeApproval && typeof bridge?.decideApproval === "function"
+          ? await bridge.decideApproval(id, {
+            decision: body.decision,
+            sessionId: body.sessionId,
+            turnId: body.turnId,
+          }, device)
+          : approvals.decide(id, body.decision, device);
         json(response, 200, { approval });
         return;
       }
@@ -812,6 +1024,8 @@ export async function createPhoneControlServer({
           model: body.model,
           reasoningEffort: body.reasoningEffort,
           serviceTier: body.serviceTier,
+          permissionProfile: body.permissionProfile,
+          confirmDangerFullAccess: body.confirmDangerFullAccess,
           clientMessageId: body.clientMessageId,
         }, device);
         rememberPhonePrompt(command, body.text);
@@ -855,6 +1069,8 @@ export async function createPhoneControlServer({
             model: body.model,
             reasoningEffort: body.reasoningEffort,
             serviceTier: body.serviceTier,
+            permissionProfile: body.permissionProfile,
+            confirmDangerFullAccess: body.confirmDangerFullAccess,
             cwd: body.cwd,
             clientMessageId: body.clientMessageId,
           }, device);
@@ -895,6 +1111,66 @@ export async function createPhoneControlServer({
           sessionId: id,
           expectedTurnId: body.expectedTurnId,
         }, device);
+        json(response, 200, { operation });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/handoff")) {
+        if (!isSameOriginWrite(request)) {
+          json(response, 403, { error: "Desktop handoff failed origin checks" });
+          return;
+        }
+        if (!bridge || typeof bridge.releaseForDesktop !== "function") {
+          json(response, 409, { error: "Interactive Codex bridge cannot hand sessions to the desktop" });
+          return;
+        }
+        const id = decodeURIComponent(url.pathname.slice("/api/sessions/".length, -"/handoff".length));
+        const session = store.get(id);
+        if (!session) {
+          json(response, 404, { error: "Session not found" });
+          return;
+        }
+        if (session.surface !== "Desktop") {
+          json(response, 409, { error: "Desktop handoff only applies to Codex desktop-app sessions; CLI sessions do not need it" });
+          return;
+        }
+        if (session.taskKind !== "user" || !session.control?.canHandoff) {
+          json(response, 409, { error: session.control?.reason || "This session is not ready for desktop handoff" });
+          return;
+        }
+        const body = await readJson(request);
+        const operation = await bridge.releaseForDesktop({
+          sessionId: id,
+          confirmSharedRelease: body.confirmSharedRelease === true,
+        }, device);
+        json(response, 200, { operation });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/reclaim")) {
+        if (!isSameOriginWrite(request)) {
+          json(response, 403, { error: "Phone reclaim failed origin checks" });
+          return;
+        }
+        if (!bridge || typeof bridge.reclaimForPhone !== "function") {
+          json(response, 409, { error: "Interactive Codex bridge cannot reclaim desktop sessions" });
+          return;
+        }
+        const id = decodeURIComponent(url.pathname.slice("/api/sessions/".length, -"/reclaim".length));
+        const session = store.get(id);
+        if (!session) {
+          json(response, 404, { error: "Session not found" });
+          return;
+        }
+        if (session.surface !== "Desktop") {
+          json(response, 409, { error: "Phone reclaim only applies to Codex desktop-app sessions; CLI sessions do not use ownership transfer" });
+          return;
+        }
+        if (session.taskKind !== "user" || !session.control?.canReclaim) {
+          json(response, 409, { error: session.control?.reason || "This session is not ready for phone reclaim" });
+          return;
+        }
+        const operation = await bridge.reclaimForPhone({ sessionId: id }, device);
         json(response, 200, { operation });
         return;
       }
@@ -1077,8 +1353,9 @@ export async function createPhoneControlServer({
       try {
         const body = await readFile(target);
         const encoded = encodedPayload(response, body);
-        const versioned = url.searchParams.has("v") && ["/app.js", "/styles.css"].includes(url.pathname);
-        const revalidate = ["/", "/sw.js"].includes(url.pathname) || !versioned && ["/app.js", "/styles.css"].includes(url.pathname);
+        const versionedAssets = ["/app.js", "/styles.css", "/browser.js", "/browser.css", "/lib/browser-frame-controls.js"];
+        const versioned = url.searchParams.has("v") && versionedAssets.includes(url.pathname);
+        const revalidate = ["/", "/browser.html", "/sw.js"].includes(url.pathname) || !versioned && versionedAssets.includes(url.pathname);
         response.writeHead(200, {
           "content-type": MIME[path.extname(target)] || "application/octet-stream",
           "content-length": encoded.payload.length,
@@ -1091,7 +1368,10 @@ export async function createPhoneControlServer({
         else throw error;
       }
     } catch (error) {
-      json(response, error.statusCode || 500, { error: error.statusCode ? error.message : "Internal server error" });
+      json(response, error.statusCode || 500, {
+        error: error.statusCode ? error.message : "Internal server error",
+        code: error.statusCode ? error.code || undefined : undefined,
+      });
       if (!error.statusCode) store.emit("warning", error);
     }
   });
@@ -1125,7 +1405,11 @@ export async function createPhoneControlServer({
     if (scanRollouts) await scanner.start();
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : config.port;
-    if (bridge) await bridge.start();
+    if (bridge && !await bridge.start()) {
+      serviceReady = false;
+    } else {
+      serviceReady = true;
+    }
     completionPolicy.seed(visibleSessions());
     pushReady = true;
     imageCleanupTimer = setInterval(() => void images.cleanup(), 60_000);
@@ -1134,6 +1418,7 @@ export async function createPhoneControlServer({
   }
 
   async function close() {
+    serviceReady = false;
     scanner.stop();
     if (spoolTimer) clearInterval(spoolTimer);
     if (heartbeatTimer) clearInterval(heartbeatTimer);
@@ -1147,9 +1432,28 @@ export async function createPhoneControlServer({
     await push.flush();
     await images.close();
     await approvals.close();
+    browser.close();
+    browserLeases.clear();
+    browserReplay.clearAll();
     await bridge?.close();
     await new Promise((resolve) => server.close(resolve));
   }
 
-  return { server, store, scanner, devices, push, images, approvals, bridge, titleGenerator, createPairing, start, close };
+  return {
+    server,
+    store,
+    scanner,
+    devices,
+    push,
+    images,
+    approvals,
+    browser,
+    browserLeases,
+    browserReplay,
+    bridge,
+    titleGenerator,
+    createPairing,
+    start,
+    close,
+  };
 }

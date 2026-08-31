@@ -1,0 +1,65 @@
+.browser-shell { max-width: 980px; padding-bottom: calc(42px + env(safe-area-inset-bottom)); }
+.browser-intro { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin: 34px 0 20px; }
+.browser-intro h1 { margin: 2px 0 0; font: 800 clamp(34px, 7vw, 62px)/.95 var(--display); letter-spacing: -.055em; }
+.browser-intro > p { max-width: 310px; margin: 0; color: var(--muted); text-align: right; }
+.extension-empty { min-height: 52vh; display: grid; place-items: center; align-content: center; padding: 48px 22px; border: 1px solid var(--line); border-radius: 28px; background: rgba(255,255,255,.58); text-align: center; box-shadow: var(--shadow); }
+.extension-empty[hidden] { display: none; }
+.extension-empty h2 { margin: 22px 0 8px; font: 760 25px/1.15 var(--display); }
+.extension-empty p { max-width: 500px; margin: 0 0 20px; color: var(--muted); }
+.extension-empty small { margin-top: 16px; color: var(--muted); }
+.extension-orbit { position: relative; width: 72px; height: 72px; border: 1px solid rgba(104,87,245,.3); border-radius: 50%; }
+.extension-orbit::before, .extension-orbit::after { content: ""; position: absolute; inset: 14px; border: 1px solid rgba(104,87,245,.22); border-radius: 50%; }
+.extension-orbit i { position: absolute; width: 14px; height: 14px; inset: 28px; border-radius: 50%; background: var(--purple); box-shadow: 0 0 0 10px rgba(104,87,245,.1); }
+.browser-console { display: grid; gap: 16px; }
+.browser-console[hidden] { display: none; }
+.browser-toolbar-card, .frame-card, .browser-input-card { border: 1px solid var(--line); border-radius: 22px; background: rgba(255,255,255,.66); box-shadow: 0 14px 40px rgba(42,35,25,.06); }
+.browser-toolbar-card { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 12px; padding: 16px; }
+.tab-picker { display: grid; gap: 6px; color: var(--muted); font-size: 11px; font-weight: 750; letter-spacing: .04em; }
+.tab-picker .select-shell { min-width: 0; }
+.tab-picker select { width: 100%; min-height: 46px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); padding: 0 38px 0 12px; color: var(--ink); font: 650 14px/1.2 var(--sans); appearance: none; }
+.tab-actions { display: flex; align-items: end; gap: 8px; }
+.tab-actions button, .nav-buttons > button, .quick-scroll button, #capture-browser { min-height: 46px; padding: 0 14px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); color: var(--ink); font-weight: 750; cursor: pointer; }
+.tab-actions .danger-quiet { color: #9b3c2e; }
+.nav-buttons { grid-column: 1 / -1; display: grid; grid-template-columns: 48px 48px 48px minmax(0,1fr); gap: 8px; }
+.nav-buttons > button { padding: 0; font-size: 22px; }
+#browser-address-form { display: flex; min-width: 0; }
+#browser-address { min-width: 0; flex: 1; border: 1px solid var(--line); border-right: 0; border-radius: 13px 0 0 13px; background: var(--paper); padding: 0 12px; color: var(--ink); font: 600 14px/1 var(--sans); }
+#browser-address-form button, .browser-input-card button { min-height: 46px; border: 0; border-radius: 0 13px 13px 0; background: var(--purple); padding: 0 18px; color: white; font-weight: 800; cursor: pointer; }
+.frame-card { padding: 16px; }
+.frame-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.frame-title-row > div { min-width: 0; }
+.frame-title-row strong, .frame-title-row small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.frame-title-row strong { font: 750 17px/1.2 var(--display); }
+.frame-title-row small { max-width: 70vw; margin-top: 4px; color: var(--muted); font-size: 11px; }
+.browser-frame { position: relative; display: grid; place-items: center; min-height: 420px; max-height: min(72vh,760px); overflow: hidden; border-radius: 18px; background: #111827; touch-action: none; user-select: none; }
+.browser-frame img { display: block; width: 100%; height: 100%; max-height: min(72vh,760px); object-fit: contain; -webkit-user-drag: none; }
+.browser-frame img[hidden] { display: none; }
+.frame-placeholder { display: grid; place-items: center; gap: 12px; color: #8e99aa; }
+.frame-placeholder span, .frame-busy span { width: 30px; height: 30px; border: 3px solid #ffffff24; border-top-color: #fff; border-radius: 50%; animation: browser-spin .8s linear infinite; }
+.frame-placeholder p { margin: 0; }
+.frame-busy { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(17,24,39,.28); backdrop-filter: blur(2px); }
+.frame-busy[hidden] { display: none; }
+.frame-help { margin: 11px 0 0; color: var(--muted); font-size: 12px; text-align: center; }
+.quick-scroll { display: none; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.browser-input-card { padding: 16px; }
+.browser-input-card > label { display: block; margin-bottom: 8px; color: var(--muted); font-size: 12px; font-weight: 750; }
+.browser-input-card > div { display: flex; }
+.browser-input-card input { min-width: 0; flex: 1; min-height: 48px; border: 1px solid var(--line); border-right: 0; border-radius: 13px 0 0 13px; background: var(--paper); padding: 0 12px; color: var(--ink); font: 600 15px/1 var(--sans); }
+.browser-input-card button + button { margin-left: 2px; border-radius: 0 13px 13px 0; background: var(--ink); }
+.browser-input-card #browser-send-text { border-radius: 0; }
+.browser-error { position: sticky; bottom: calc(12px + env(safe-area-inset-bottom)); z-index: 10; margin: 14px auto 0; width: fit-content; max-width: 92%; border-radius: 99px; background: #922f25; padding: 10px 16px; color: white; font-weight: 700; box-shadow: 0 12px 32px rgba(90,20,12,.25); }
+button:disabled, select:disabled { cursor: wait; opacity: .58; }
+@keyframes browser-spin { to { transform: rotate(360deg); } }
+@media (max-width: 680px) {
+  .browser-intro { align-items: start; margin-top: 26px; }
+  .browser-intro > p { max-width: 180px; font-size: 12px; }
+  .browser-toolbar-card { grid-template-columns: minmax(0,1fr); }
+  .tab-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .tab-actions button { width: 100%; }
+  .nav-buttons { grid-column: auto; grid-template-columns: repeat(3,48px); }
+  #browser-address-form { grid-column: 1 / -1; min-height: 48px; }
+  .browser-frame { min-height: 360px; }
+  .quick-scroll { display: grid; }
+  .browser-input-card button { padding-inline: 13px; }
+}
+@media (prefers-reduced-motion: reduce) { .frame-placeholder span, .frame-busy span { animation: none; } }

@@ -2,6 +2,61 @@
 
 本项目遵循语义化版本。这里只记录用户可见变化；开发方向见 [ROADMAP.md](ROADMAP.md)。
 
+## 0.9.2 - 2026-08-30
+
+- 公开仓库统一使用 `under-stand/phone-control` monorepo；Windows 安装器会从嵌套的
+  `plugins/plugin-phone-control` 目录安装，并固定 `%USERPROFILE%\\.phone-control\\source` 作为稳定源码路径。
+- Windows 安装器支持从本地 ZIP/源码包首次安装；公开仓库可直接使用匿名 Raw GitHub 地址，
+  私有仓库则应从已登录 GitHub 的 SSH/HTTPS checkout 或 ZIP 运行安装器。
+- `check-source` 现在校验公开 monorepo 元数据、Windows 安装器入口和带时间戳的插件 cachebuster；
+  前端资源仍为 `v63`。
+- 修复手机桥接对 `request_user_input` 未校验 turn 所有权的问题；Desktop/CLI 自己持有的交互不会再被手机抢占，已完成 turn 的延迟请求也会失效。
+- 后台 loaded thread 元数据恢复改为有限并发；服务健康检查新增 `ready` 就绪标记，Windows 安装器会等待 App Server 真正可用后再报告成功。
+- 已移交给 Codex Desktop 的会话新增“手机接管”：先用只读 `thread/read` 确认运行状态，再显式 `thread/resume`；成功后才恢复手机输入。
+- 电脑端仍在执行或仍持有 `active writer` 时，接管会给出明确提示并继续保持手机只读，不会自动重试或抢占；若检查与恢复之间发生状态竞争，会重启受管 App Server 立即回滚刚取得的写入权。
+- “移交电脑 / 手机接管”仅对来源为 Desktop 的用户会话开放；CLI 会话继续使用原有恢复和输入流程，不显示也不能调用所有权移交接口。
+- 共享受管 App Server 重启时只把用户选择的 Desktop thread 标记为已移交；其他被短暂释放的 CLI/会话不会进入手动接管状态。
+- 手机端顶部保留“状态”和实时连接两个高频入口；浏览器、设备与配对移入“更多”菜单，并优化窄屏下的品牌压缩、连接短标签和菜单键盘/点击行为。
+- 手机前端缓存升级到 `v63`。
+
+## 0.9.1 - 2026-08-30
+
+- 手机拥有的 Windows 空闲会话新增“移交电脑”：主动关闭并重建 Phone Control 的受管 stdio App Server，立即释放 `active writer`，保留历史并把已释放会话切为手机只读。
+- 移交前会检查所有手机会话均无运行中 turn、问题或审批；共享进程还有其他空闲会话时要求明确确认，并一次列出所有受影响 session。
+- 共享 Unix Socket 暂不伪装成支持立即移交；官方 `thread/unsubscribe` 的最后订阅者保留期最长 30 分钟，无法满足桌面端马上接管。
+- 手机前端缓存升级到 `v60`。
+
+## 0.9.0 - 2026-08-30
+
+- 新增可选 Chrome Browser Bridge：已配对手机可以查看电脑上已打开的普通网页标签页，并执行切换、新建、关闭、导航、截图点按、滚动、文本输入和回车。
+- 浏览器扩展仅连接本机 `127.0.0.1:8787`；内部接口要求回环来源、Chrome 扩展 Origin 和专用请求头，并在服务进程内绑定首个扩展来源。
+- 浏览器写操作使用 60 秒单设备租约、旧截图/页面代数校验和五分钟 client action 防重放；重复请求不会重复点击或输入，设备退出、撤销或离开页面会释放租约。
+- 修复最终回答偶尔被归入“过程回复”的问题：保留 rollout 的精确 turn ID 与 `commentary` / `final_answer` 阶段，已完成的旧记录仍有安全回退，重新扫描可自动补齐旧历史字段。
+- 修复删除刚完成的会话后，遗留完成提醒短暂遮挡其他会话点击的问题；删除会话会同步关闭属于它的提醒浮层。
+- 新建会话与空闲会话的下一轮设置新增权限选择：只读、工作区内自动执行、超出工作区时询问、完全访问电脑；完全访问要求二次确认，服务端再次验证配置。
+- 接入 App Server 原生命令、文件与 `request_permissions` 审批；只处理由手机开始或追加的精确 turn，并用 JSON-RPC request、thread、turn 三重绑定防止误接管 Desktop/CLI 审批。
+- 手机前端缓存升级到 `v59`，并增加浏览器控制页、扩展安装辅助脚本、联调测试与安全说明。
+
+## 0.8.3 - 2026-08-30
+
+- 修复服务或网络中断后，缺少结束事件的旧 turn 永久显示为“工作中”的问题；超过现场状态验证窗口后，手机端会自动显示“连接已中断”。
+- 保留原始 `working` 事件作为诊断证据，并继续以只读方式保护无法验证的旧 turn，避免误删会话或把新指令送入错误现场。
+- 服务端快照新增精确的状态失效时间，已打开的手机页面无需重载也会在下一次定时渲染时更新状态；前端缓存升级到 `v57`。
+
+## 0.8.2 - 2026-08-30
+
+- 修复新版 Codex rollout 先写 `response_item`、随后又在 `task_complete` 重复最终回复时，会话历史把同一条 Codex 回复显示两次的问题。
+- 存储层只合并同一未跨越轮次边界的 rollout 副本，前端再按同一轮精确文本去重；不同轮次中确实重复的提问或回复仍会保留。
+- 手机前端缓存升级到 `v56`，避免 Service Worker 继续提供旧的会话合并逻辑。
+- Windows 在 Phone Control 自己承载的会话中执行 `service install/restart/stop/uninstall` 时会在停服务前拒绝，并提示改用独立 PowerShell 或未由 Phone Control 持有的 Desktop/CLI 会话，避免更新命令终止自身后留下离线任务。
+
+## 0.8.1 - 2026-08-30
+
+- Windows 一键安装改用 `%USERPROFILE%\.phone-control\source`，避开 Store/AppX `LOCALAPPDATA` 重定向，并修复 Windows PowerShell 5 对 Node 版本的误判。
+- Windows 后台启动器在没有显式代理环境变量时自动继承当前用户的系统代理，修复 Clash/Mihomo 环境下后台 Codex 请求反复 `request timed out` 的问题。
+- Windows 服务停止、重启和更新会清理精确匹配的旧 Node 进程及其 Codex 子进程，避免遗留进程占用 `127.0.0.1:8787`。
+- README 补充一次性配对码与访问口令的区别、`active writer` 所有权边界，以及本次真实故障的诊断和恢复步骤。
+
 ## 0.8.0 - 2026-08-29
 
 - 新增跨平台 App Server Transport：Linux 与 macOS 优先使用 Unix Socket，缺失时自动回退到受管 stdio；原生 Windows 直接使用 stdio。

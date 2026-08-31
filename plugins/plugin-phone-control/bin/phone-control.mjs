@@ -26,6 +26,8 @@ import {
   uninstallRelayService,
   updateRelayConfig,
 } from "../src/relay-manager.mjs";
+import { PHONE_CONTROL_VERSION } from "../src/version.mjs";
+import { defaultMarketplaceRoot, writeMarketplaceManifest } from "../src/marketplace.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BOOLEAN_FLAGS = new Set(["activate", "no-qr", "secure-cookies"]);
@@ -60,7 +62,7 @@ function applyEnvironment(flags, command) {
 }
 
 function printHelp() {
-  process.stdout.write(`Phone Control 0.8.0\n\n`);
+  process.stdout.write(`Phone Control ${PHONE_CONTROL_VERSION}\n\n`);
   process.stdout.write(`Usage:\n`);
   process.stdout.write(`  phone-control start [--host HOST] [--port PORT] [--public-url URL] [--codex-command PATH]\n`);
   process.stdout.write(`  phone-control pair [--url URL] [--no-qr]\n`);
@@ -68,6 +70,7 @@ function printHelp() {
   process.stdout.write(`  phone-control interactions <enable|disable|status>\n`);
   process.stdout.write(`  phone-control service <install|uninstall|status|start|stop|restart> [--runtime NODE]\n`);
   process.stdout.write(`  phone-control doctor [--data-dir PATH] [--codex-home PATH] [--codex-command PATH]\n\n`);
+  process.stdout.write(`  phone-control marketplace install [--plugin-root PATH] [--marketplace-root PATH]\n`);
   process.stdout.write("  phone-control relay <configure|install|uninstall|status|doctor|start|stop|restart|activate|deactivate>\n");
   process.stdout.write("Tailscale Serve or an outbound VPS relay can proxy the default loopback listener.\n");
 }
@@ -262,6 +265,15 @@ async function service(action, flags) {
   process.stdout.write(`${status.kind}: ${status.installed ? "installed" : "not installed"}; ${status.active ? "active" : "inactive"}${status.details ? ` (${status.details})` : ""}\n`);
 }
 
+async function marketplace(action, flags) {
+  if (action !== "install") throw new Error("Use marketplace install");
+  const pluginRoot = path.resolve(flags["plugin-root"] || ROOT);
+  const marketplaceRoot = path.resolve(flags["marketplace-root"] || defaultMarketplaceRoot());
+  const result = await writeMarketplaceManifest({ pluginRoot, marketplaceRoot });
+  process.stdout.write(`Wrote Phone Control marketplace: ${result.manifestPath}\n`);
+  process.stdout.write(`Register it with: codex plugin marketplace add ${result.marketplaceRoot}\n`);
+}
+
 async function relay(action, flags) {
   const config = await loadConfig();
   if (action === "configure") {
@@ -378,6 +390,7 @@ try {
   else if (command === "approvals") await configureApprovals(positionals[0]);
   else if (command === "interactions") await configureInteractions(positionals[0]);
   else if (command === "service") await service(positionals[0] || "status", flags);
+  else if (command === "marketplace") await marketplace(positionals[0] || "install", flags);
   else if (command === "relay") await relay(positionals[0] || "status", flags);
   else {
     printHelp();

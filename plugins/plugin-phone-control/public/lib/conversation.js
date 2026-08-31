@@ -34,7 +34,7 @@ function addMessage(messages, event) {
   const origin = eventOrigin(event);
   const duplicate = messages.some((previous) => (
     messageFingerprint(previous.message) === messageFingerprint(text)
-    && previous.origin !== origin
+    && (previous.origin !== origin || event.kind === "assistant_message")
   ));
   if (duplicate) return;
   messages.push({
@@ -43,7 +43,18 @@ function addMessage(messages, event) {
     at: event.at,
     message: text,
     origin,
+    phase: event.phase || null,
   });
+}
+
+export function assistantReplyGroups(turn) {
+  const messages = turn?.assistantMessages || [];
+  const explicitFinal = [...messages].reverse().find((message) => message.phase === "final_answer") || null;
+  const finalReply = explicitFinal || (turnClosed(turn) ? messages.at(-1) || null : null);
+  return {
+    finalReply,
+    updates: finalReply ? messages.filter((message) => message !== finalReply) : [...messages],
+  };
 }
 
 export function conversationTurns(events = []) {

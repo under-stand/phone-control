@@ -21,13 +21,14 @@ export function createRolloutContext(filePath) {
 
 function baseEvent(record, context, kind, salt = "") {
   const payload = record.payload || {};
+  const messageMetadata = payload.internal_chat_message_metadata_passthrough || {};
   const at = isoTime(record.timestamp ?? payload.timestamp ?? Date.now());
   return {
     eventId: stableId(context.filePath, at, record.type, payload.type, payload.id, salt),
     source: "rollout",
     provider: "codex",
     sessionId: context.sessionId,
-    turnId: asString(payload.turn_id ?? payload.turnId),
+    turnId: asString(payload.turn_id ?? payload.turnId ?? messageMetadata.turn_id ?? messageMetadata.turnId),
     at,
     kind,
     cwd: context.cwd,
@@ -49,9 +50,14 @@ function rolloutAgentRole(source) {
   return asString(subagent.other ?? subagent.role ?? subagent.type ?? subagent.name);
 }
 
-function messageEvent(record, context, role, text) {
+function messagePhase(value) {
+  return ["commentary", "final_answer"].includes(value) ? value : null;
+}
+
+function messageEvent(record, context, role, text, phase = null) {
   const event = baseEvent(record, context, role === "user" ? "user_prompt" : "assistant_message", role);
   event.message = { role, text: clampMessageText(text) };
+  if (role === "assistant") event.phase = messagePhase(phase);
   return event;
 }
 
@@ -103,7 +109,7 @@ export function normalizeRolloutRecord(record, context) {
       case "task_complete": {
         const events = [];
         const finalText = clampMessageText(payload.last_agent_message ?? payload.message);
-        if (finalText) events.push(messageEvent(record, context, "assistant", finalText));
+        if (finalText) events.push(messageEvent(record, context, "assistant", finalText, "final_answer"));
         events.push(baseEvent(record, context, "turn_complete", "complete"));
         return events;
       }
@@ -113,7 +119,7 @@ export function normalizeRolloutRecord(record, context) {
       }
       case "agent_message": {
         const text = clampMessageText(payload.message);
-        return text ? [messageEvent(record, context, "assistant", text)] : [];
+        return text ? [messageEvent(record, context, "assistant", text, payload.phase)] : [];
       }
       case "turn_aborted": return [baseEvent(record, context, "aborted")];
       case "error": {
@@ -131,7 +137,7 @@ export function normalizeRolloutRecord(record, context) {
     const role = payload.role === "user" ? "user" : payload.role === "assistant" ? "assistant" : null;
     const text = extractContentText(payload.content);
     if (role === "user" && isCodexInjectedUserMessage(text)) return [];
-    return role && text ? [messageEvent(record, context, role, text)] : [];
+    return role && text ? [messageEvent(record, context, role, text, payload.phase)] : [];
   }
   if (["function_call", "custom_tool_call", "tool_call"].includes(itemType)) {
     const name = asString(payload.name) || "tool";

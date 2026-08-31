@@ -1,7 +1,7 @@
 # Phone Control
 
 Phone Control 是一个本地优先的 Codex 手机控制面板。它把桌面 App、IDE 和 CLI 会话整理成适合
-手机查看的任务流，并支持查看进度、回答问题、续聊、发送图片、中止任务、新建会话和接收完成提醒。
+手机查看的任务流，并支持查看进度、回答问题、续聊、发送图片、中止任务、新建会话、浏览器控制和接收完成提醒。
 
 服务与数据保留在自己的电脑上；手机通过 Tailscale、可信局域网或自建 VPS HTTPS Relay 访问。
 
@@ -76,6 +76,7 @@ npm ci
 npm run verify
 npx playwright install chromium
 npm run test:mobile
+npm run test:browser
 ```
 
 项目采用 MIT License。参与开发前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。

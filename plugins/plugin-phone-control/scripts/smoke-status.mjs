@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { loadConfig } from "../src/config.mjs";
+import { PHONE_CONTROL_VERSION } from "../src/version.mjs";
 
 function request({ port, pathname, method = "GET", token = null, cookie = null, body = null }) {
   const payload = body == null ? null : Buffer.from(JSON.stringify(body));
@@ -45,7 +46,8 @@ let temporaryDeviceId = null;
 try {
   const health = await request({ port: config.port, pathname: "/api/health" });
   assert.equal(health.statusCode, 200, "Phone Control is not reachable");
-  assert.equal(health.body.version, "0.8.0", "Live Phone Control v0.8.0 is not running");
+  assert.equal(health.body.version, PHONE_CONTROL_VERSION, `Live Phone Control v${PHONE_CONTROL_VERSION} is not running`);
+  assert.equal(health.body.ready, true, "Phone Control HTTP is alive but App Server is not ready");
 
   const pairing = await request({
     port: config.port,

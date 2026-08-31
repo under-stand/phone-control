@@ -1,10 +1,14 @@
-const CACHE = "phone-control-v55";
+const CACHE = "phone-control-v63";
 const ASSETS = [
   "/",
-  "/styles.css?v=55",
-  "/app.js?v=55",
-  "/lib/format.js?v=55",
-  "/lib/conversation.js?v=55",
+  "/browser.html",
+  "/styles.css?v=63",
+  "/app.js?v=63",
+  "/browser.css?v=63",
+  "/browser.js?v=63",
+  "/lib/format.js?v=63",
+  "/lib/conversation.js?v=63",
+  "/lib/browser-frame-controls.js?v=63",
   "/icon.svg",
   "/manifest.webmanifest",
   "/icons/image.svg",
@@ -38,14 +42,15 @@ self.addEventListener("fetch", (event) => {
       const timer = setTimeout(() => controller.abort(), 2_000);
       try {
         const response = await fetch(event.request, { signal: controller.signal });
-        if (response.ok && url.pathname === "/" && !url.searchParams.has("token")) {
+        const safeShell = ["/", "/browser.html"].includes(url.pathname) && !url.searchParams.has("token");
+        if (response.ok && safeShell) {
           const cache = await caches.open(CACHE);
-          await cache.put("/", response.clone());
+          await cache.put(url.pathname, response.clone());
         }
         return response;
       } catch (error) {
-        const safeShell = url.pathname === "/" && !url.searchParams.has("token");
-        const cached = safeShell ? await caches.match("/") : null;
+        const safeShell = ["/", "/browser.html"].includes(url.pathname) && !url.searchParams.has("token");
+        const cached = safeShell ? await caches.match(url.pathname) : null;
         if (cached) return cached;
         throw error;
       } finally {

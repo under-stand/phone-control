@@ -96,11 +96,109 @@ export function buildTmuxLauncher({ root, dataDir, host, port, runtime = process
   return `#!/bin/sh\n${metadataComment(metadata)}\nwhile true; do\n  if [ -f ${shellQuote(log)} ] && [ "$(wc -c < ${shellQuote(log)})" -ge 4194304 ]; then\n    mv ${shellQuote(log)} ${shellQuote(`${log}.1`)}\n  fi\n  ${shellQuote(metadata.runtime)} ${shellQuote(metadata.entry)} start --host ${shellQuote(host)} --port ${port} --data-dir ${shellQuote(dataDir)} --no-qr >> ${shellQuote(log)} 2>&1\n  sleep 2\ndone\n`;
 }
 
+export function buildWindowsProxyBootstrap() {
+  return `function ConvertTo-PhoneControlProxyUri([string]$Value, [string]$Scheme) {
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+  $trimmed = $Value.Trim()
+  if ($trimmed -match '^[a-z][a-z0-9+.-]*://') { return $trimmed }
+  return ($Scheme + '://' + $trimmed)
+}
+function Import-PhoneControlWindowsProxy {
+  $settings = $null
+  try {
+    $settings = Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -ErrorAction Stop
+  } catch {}
+
+  if (-not $env:NO_PROXY) {
+    $bypass = @('127.0.0.1', 'localhost', '::1')
+    if ($settings -and $settings.ProxyOverride) {
+      foreach ($item in ([string]$settings.ProxyOverride -split ';')) {
+        $candidate = $item.Trim()
+        if (-not $candidate -or $candidate -eq '<local>') { continue }
+        if ($candidate.StartsWith('*.')) { $candidate = '.' + $candidate.Substring(2) }
+        $bypass += $candidate
+      }
+    }
+    $env:NO_PROXY = ($bypass | Select-Object -Unique) -join ','
+  }
+
+  if ($env:HTTP_PROXY -or $env:HTTPS_PROXY -or $env:ALL_PROXY) { return $false }
+  if (-not $settings -or [int]$settings.ProxyEnable -ne 1 -or -not $settings.ProxyServer) { return $false }
+
+  $servers = @{}
+  foreach ($item in ([string]$settings.ProxyServer -split ';')) {
+    $candidate = $item.Trim()
+    if (-not $candidate) { continue }
+    $separator = $candidate.IndexOf('=')
+    if ($separator -gt 0) {
+      $servers[$candidate.Substring(0, $separator).Trim().ToLowerInvariant()] = $candidate.Substring($separator + 1).Trim()
+    } elseif (-not $servers.ContainsKey('default')) {
+      $servers['default'] = $candidate
+    }
+  }
+
+  $httpServer = if ($servers.ContainsKey('http')) { $servers['http'] } else { $servers['default'] }
+  $httpsServer = if ($servers.ContainsKey('https')) { $servers['https'] } elseif ($httpServer) { $httpServer } else { $servers['default'] }
+  if ($httpServer) { $env:HTTP_PROXY = ConvertTo-PhoneControlProxyUri $httpServer 'http' }
+  if ($httpsServer) { $env:HTTPS_PROXY = ConvertTo-PhoneControlProxyUri $httpsServer 'http' }
+  if ($servers.ContainsKey('socks')) { $env:ALL_PROXY = ConvertTo-PhoneControlProxyUri $servers['socks'] 'socks5' }
+  return [bool]($env:HTTP_PROXY -or $env:HTTPS_PROXY -or $env:ALL_PROXY)
+}
+`;
+}
+
 export function buildWindowsLauncher({ root, dataDir, host, port, runtime = process.execPath }) {
   const metadata = serviceMetadata({ root, runtime });
   const log = path.join(dataDir, "service.log");
   const rotatedLog = `${log}.1`;
-  return `${metadataComment(metadata)}\n$ErrorActionPreference = 'Continue'\n$logPath = ${powershellQuote(log)}\n$rotatedLogPath = ${powershellQuote(rotatedLog)}\nwhile ($true) {\n  try {\n    if ((Test-Path -LiteralPath $logPath) -and (Get-Item -LiteralPath $logPath).Length -ge 4194304) {\n      Move-Item -LiteralPath $logPath -Destination $rotatedLogPath -Force\n    }\n    & ${powershellQuote(metadata.runtime)} ${powershellQuote(metadata.entry)} 'start' '--host' ${powershellQuote(host)} '--port' ${powershellQuote(String(port))} '--data-dir' ${powershellQuote(dataDir)} '--no-qr' *>> $logPath\n  } catch {\n    ($_ | Out-String) | Add-Content -LiteralPath $logPath\n  }\n  Start-Sleep -Seconds 2\n}\n`;
+  return `${metadataComment(metadata)}\n$ErrorActionPreference = 'Continue'\n$logPath = ${powershellQuote(log)}\n$rotatedLogPath = ${powershellQuote(rotatedLog)}\n${buildWindowsProxyBootstrap()}$phoneControlImportedProxy = Import-PhoneControlWindowsProxy\nif ($phoneControlImportedProxy) {\n  '[phone-control launcher] Imported the current Windows user proxy for background Codex access.' | Add-Content -LiteralPath $logPath\n}\nwhile ($true) {\n  try {\n    if ((Test-Path -LiteralPath $logPath) -and (Get-Item -LiteralPath $logPath).Length -ge 4194304) {\n      Move-Item -LiteralPath $logPath -Destination $rotatedLogPath -Force\n    }\n    & ${powershellQuote(metadata.runtime)} ${powershellQuote(metadata.entry)} 'start' '--host' ${powershellQuote(host)} '--port' ${powershellQuote(String(port))} '--data-dir' ${powershellQuote(dataDir)} '--no-qr' *>> $logPath\n  } catch {\n    ($_ | Out-String) | Add-Content -LiteralPath $logPath\n  }\n  Start-Sleep -Seconds 2\n}\n`;
+}
+
+export function buildWindowsProcessCleanup({ runtime, entry, dataDir }) {
+  return `$ErrorActionPreference = 'Stop'
+$runtime = ${powershellQuote(runtime)}
+$entry = ${powershellQuote(entry)}
+$dataDir = ${powershellQuote(dataDir)}
+$processes = @(Get-CimInstance Win32_Process)
+$roots = @($processes | Where-Object {
+  $_.ExecutablePath -ieq $runtime -and
+  $_.CommandLine -and
+  $_.CommandLine.IndexOf($entry, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+  $_.CommandLine.IndexOf($dataDir, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+  $_.CommandLine -match '(?i)(?:^|\\s|["''])start(?:\\s|$|["''])'
+})
+function Stop-PhoneControlProcessTree([int]$ProcessId) {
+  foreach ($child in @($processes | Where-Object { $_.ParentProcessId -eq $ProcessId })) {
+    Stop-PhoneControlProcessTree $child.ProcessId
+  }
+  Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+}
+foreach ($rootProcess in $roots) { Stop-PhoneControlProcessTree $rootProcess.ProcessId }
+`;
+}
+
+export function buildWindowsCallerGuard({ runtime, entry, dataDir }) {
+  return `$ErrorActionPreference = 'Stop'
+$runtime = ${powershellQuote(runtime)}
+$entry = ${powershellQuote(entry)}
+$dataDir = ${powershellQuote(dataDir)}
+$processes = @(Get-CimInstance Win32_Process)
+$byId = @{}
+foreach ($process in $processes) { $byId[[int]$process.ProcessId] = $process }
+$current = $byId[[int]$PID]
+while ($current -and [int]$current.ParentProcessId -gt 0) {
+  $current = $byId[[int]$current.ParentProcessId]
+  if (-not $current) { break }
+  if ($current.ExecutablePath -ieq $runtime -and
+      $current.CommandLine -and
+      $current.CommandLine.IndexOf($entry, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+      $current.CommandLine.IndexOf($dataDir, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+      $current.CommandLine -match '(?i)(?:^|\\s|["''])start(?:\\s|$|["''])') {
+    [Console]::Error.WriteLine('Phone Control cannot stop or replace its own Windows service from a session hosted by that service. Run this command from a separate PowerShell window or an independent Codex Desktop/CLI session.')
+    exit 23
+  }
+}
+`;
 }
 
 export function buildLaunchdPlist({ root, dataDir, host, port, runtime = process.execPath }) {
@@ -263,12 +361,51 @@ async function installTmux({ root, dataDir, host, port, runtime = process.execPa
   return { kind: "tmux+cron", path: launcher };
 }
 
-async function stopWindowsTask() {
-  await run("schtasks.exe", ["/End", "/TN", WINDOWS_TASK], { inherit: false }).catch(() => null);
+async function windowsServiceDefinition(dataDir) {
+  try {
+    return parseServiceMetadata(await readFile(windowsLauncherPath(dataDir), "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return null;
+  }
 }
 
-async function removeWindowsTask() {
-  await stopWindowsTask();
+async function assertWindowsCallerOutsideService({ dataDir, definition }) {
+  if (!dataDir || !definition) return;
+  const guard = await run("powershell.exe", [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    buildWindowsCallerGuard({ ...definition, dataDir }),
+  ], { inherit: false });
+  if (guard.code !== 0) {
+    throw new Error(guard.stderr.trim() || guard.stdout.trim() || "The Windows service operation would stop its own caller");
+  }
+}
+
+async function stopWindowsTask({ dataDir, definition = null } = {}) {
+  const selected = definition || (dataDir ? await windowsServiceDefinition(dataDir) : null);
+  // A phone-owned Codex thread runs below this service's managed App Server.
+  // Refuse before /End so the updater cannot terminate the process that still
+  // needs to register and start the replacement scheduled task.
+  await assertWindowsCallerOutsideService({ dataDir, definition: selected });
+  await run("schtasks.exe", ["/End", "/TN", WINDOWS_TASK], { inherit: false }).catch(() => null);
+  if (!selected || !dataDir) return;
+  const cleanup = await run("powershell.exe", [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    buildWindowsProcessCleanup({ ...selected, dataDir }),
+  ], { inherit: false });
+  if (cleanup.code !== 0) {
+    throw new Error(`Could not stop the previous Phone Control process tree: ${cleanup.stderr.trim() || cleanup.stdout.trim()}`);
+  }
+}
+
+async function removeWindowsTask(options = {}) {
+  await stopWindowsTask(options);
   await run("schtasks.exe", ["/Delete", "/TN", WINDOWS_TASK, "/F"], { inherit: false }).catch(() => null);
 }
 
@@ -282,8 +419,9 @@ async function installWindowsTask({ root, dataDir, host, port, runtime = process
   await validateServiceRuntime({ root, runtime });
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const launcher = windowsLauncherPath(dataDir);
+  const existingDefinition = await windowsServiceDefinition(dataDir);
+  await removeWindowsTask({ dataDir, definition: existingDefinition });
   await atomicWrite(launcher, buildWindowsLauncher({ root, dataDir, host, port, runtime }), 0o700);
-  await removeWindowsTask();
   const created = await run("powershell.exe", [
     "-NoLogo",
     "-NoProfile",
@@ -328,7 +466,7 @@ export async function installUserService(options) {
 
 export async function uninstallUserService({ dataDir }) {
   if (process.platform === "win32") {
-    await removeWindowsTask();
+    await removeWindowsTask({ dataDir });
     await unlink(windowsLauncherPath(dataDir)).catch((error) => {
       if (error.code !== "ENOENT") throw error;
     });
@@ -358,12 +496,7 @@ export async function uninstallUserService({ dataDir }) {
 
 export async function serviceStatus({ dataDir } = {}) {
   if (process.platform === "win32") {
-    let definition = null;
-    try {
-      definition = parseServiceMetadata(await readFile(windowsLauncherPath(dataDir), "utf8"));
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
+    const definition = await windowsServiceDefinition(dataDir);
     const state = await windowsTaskState();
     return {
       installed: Boolean(definition && state),
@@ -417,7 +550,7 @@ export async function serviceStatus({ dataDir } = {}) {
 export async function controlUserService(action, { dataDir }) {
   if (!["start", "stop", "restart"].includes(action)) throw new Error("Unsupported service action");
   if (process.platform === "win32") {
-    if (action === "stop" || action === "restart") await stopWindowsTask();
+    if (action === "stop" || action === "restart") await stopWindowsTask({ dataDir });
     if (action === "start" || action === "restart") {
       const result = await run("schtasks.exe", ["/Run", "/TN", WINDOWS_TASK], { inherit: false });
       if (result.code !== 0) throw new Error(`Could not ${action} the Phone Control scheduled task: ${result.stderr.trim() || result.stdout.trim()}`);

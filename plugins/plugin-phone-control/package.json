@@ -1,7 +1,7 @@
 {
   "name": "plugin-phone-control",
-  "version": "0.8.0",
-  "description": "Local-first mobile task dashboard for Codex Desktop and CLI.",
+  "version": "0.9.2",
+  "description": "Local-first mobile task and Chrome control dashboard for Codex Desktop and CLI.",
   "type": "module",
   "private": true,
   "bin": {
@@ -20,6 +20,7 @@
     "check": "node ./scripts/check-source.mjs",
     "test": "node ./scripts/run-tests.mjs",
     "test:mobile": "node ./scripts/mobile-regression.mjs",
+    "test:browser": "node ./scripts/browser-mobile-regression.mjs",
     "verify": "npm run check && npm test"
   },
   "dependencies": {

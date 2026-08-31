@@ -13,6 +13,7 @@ npm ci
 npm run verify
 npx playwright install chromium
 npm run test:mobile
+npm run test:browser
 ```
 
 `npm run verify` 必须保持通过。涉及页面布局、输入、连接、通知或任务详情的改动，还应运行

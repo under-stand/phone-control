@@ -52,6 +52,16 @@ export function relativeTime(value, now = Date.now()) {
   return `${Math.floor(delta / 86_400_000)} 天前`;
 }
 
+export function sessionDisplayStatus(session = {}, now = Date.now()) {
+  const status = session.status || "unknown";
+  if (!["working", "waiting"].includes(status)) return status;
+  if (session.control?.live) return status;
+  const staleAt = Date.parse(session.staleAt);
+  const disconnected = session.liveness === "unverified"
+    || (Number.isFinite(staleAt) && now >= staleAt);
+  return disconnected ? "disconnected" : status;
+}
+
 export function localDateTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "未知时间";

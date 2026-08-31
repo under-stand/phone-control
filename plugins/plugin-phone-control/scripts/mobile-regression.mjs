@@ -50,6 +50,9 @@ class AuditBridge extends EventEmitter {
     this.interruptions = [];
     this.createdSessions = [];
     this.deletedSessions = [];
+    this.handoffs = [];
+    this.reclaims = [];
+    this.handedOffThreads = new Map();
     this.connected = false;
   }
 
@@ -58,11 +61,14 @@ class AuditBridge extends EventEmitter {
       connected: this.connected,
       initialized: this.connected,
       transport: "audit",
+      handoffSupported: true,
       server: { userAgent: "codex-audit" },
       loadedThreads: Array.from(this.threads.keys()),
       subscribedThreads: Array.from(this.threads.keys()),
       threadStates: Object.fromEntries(this.threads),
-      unavailableThreads: [],
+      handedOffThreads: Array.from(this.handedOffThreads.keys()),
+      unavailableThreadReasons: Object.fromEntries(this.handedOffThreads),
+      unavailableThreads: Array.from(this.handedOffThreads.keys()),
       retryingSubscriptions: 0,
       pendingQuestions: 0,
     };
@@ -145,7 +151,7 @@ class AuditBridge extends EventEmitter {
     return operation;
   }
 
-  async createSession({ text, cwd, model, reasoningEffort, serviceTier, clientMessageId }, device) {
+  async createSession({ text, cwd, model, reasoningEffort, serviceTier, permissionProfile, clientMessageId }, device) {
     const sessionId = `thread-phone-created-${this.createdSessions.length + 1}`;
     const turnId = `turn-phone-created-${this.createdSessions.length + 1}`;
     const command = {
@@ -157,6 +163,9 @@ class AuditBridge extends EventEmitter {
       model: model || "gpt-5.6",
       reasoningEffort: reasoningEffort || "high",
       serviceTier: serviceTier || "default",
+      permissionProfile: permissionProfile || null,
+      permissionMode: permissionProfile === "danger-full-access" ? "danger-full-access" : permissionProfile === "read-only" ? "read-only" : permissionProfile ? "workspace-write" : null,
+      approvalPolicy: permissionProfile === "on-request" ? "onRequest" : permissionProfile ? "never" : null,
       status: "delivered",
       delivery: "delivered",
       cwd,
@@ -184,6 +193,44 @@ class AuditBridge extends EventEmitter {
     this.deletedSessions.push(operation);
     this.threads.delete(sessionId);
     this.emit("thread/deleted", { threadId: sessionId });
+    this.emit("status", this.status());
+    return operation;
+  }
+
+  async releaseForDesktop({ sessionId }, device) {
+    const state = this.threads.get(sessionId);
+    assert.equal(state?.status, "idle", "the mobile UI must only hand off an idle desktop session");
+    const operation = {
+      id: `audit-handoff-${this.handoffs.length + 1}`,
+      sessionId,
+      affectedSessionIds: [sessionId],
+      action: "handoff",
+      status: "released",
+      delivery: "delivered",
+      releasedAt: new Date().toISOString(),
+      decidedBy: device.id,
+    };
+    this.handoffs.push(operation);
+    this.handedOffThreads.set(sessionId, "This desktop session was handed off and is phone read-only");
+    this.threads.delete(sessionId);
+    this.emit("status", this.status());
+    return operation;
+  }
+
+  async reclaimForPhone({ sessionId }, device) {
+    assert.equal(this.handedOffThreads.has(sessionId), true, "the mobile UI must only reclaim a handed-off desktop session");
+    const operation = {
+      id: `audit-reclaim-${this.reclaims.length + 1}`,
+      sessionId,
+      action: "reclaim",
+      status: "acquired",
+      delivery: "delivered",
+      acquiredAt: new Date().toISOString(),
+      decidedBy: device.id,
+    };
+    this.reclaims.push(operation);
+    this.handedOffThreads.delete(sessionId);
+    this.threads.set(sessionId, { status: "idle", activeFlags: [], activeTurnId: null });
     this.emit("status", this.status());
     return operation;
   }
@@ -234,7 +281,7 @@ try {
   runtime.store.ingest(event("thread-active", 64, "user_prompt", { source: "phone-control", turnId: "turn-thread-active", message: { role: "user", text: "把手机端会话体验继续打磨，并检查图片发送。" } }));
   runtime.store.ingest(event("thread-active", 70, "user_prompt", { source: "hook", turnId: "turn-thread-active", message: { role: "user", text: "把手机端会话体验继续打磨，并检查图片发送。" } }));
   runtime.store.ingest(event("thread-active", 71, "user_prompt", { source: "rollout", turnId: null, message: { role: "user", text: "把手机端会话体验继续打磨，并检查图片发送。" } }));
-  runtime.store.ingest(event("thread-active", 71.5, "assistant_message", { source: "rollout", turnId: "turn-thread-active", message: { role: "assistant", text: Array.from({ length: 14 }, (_, index) => `过程回复第 ${index + 1} 行：展开后必须完整显示这一整行，不能在字形中部裁断。`).join("\n") } }));
+  runtime.store.ingest(event("thread-active", 71.5, "assistant_message", { source: "rollout", turnId: "turn-thread-active", phase: "commentary", message: { role: "assistant", text: Array.from({ length: 14 }, (_, index) => `过程回复第 ${index + 1} 行：展开后必须完整显示这一整行，不能在字形中部裁断。`).join("\n") } }));
   const finalAssistantReply = `我正在检查移动端布局、输入稳定性和图片附件链路。
 第二行应该保留换行，并让 **关键信息** 更容易阅读。
 
@@ -263,7 +310,7 @@ https://inside-fence.example
 \`\`\`
 
 <b>这段 HTML 只应显示为文本</b>`;
-  runtime.store.ingest(event("thread-active", 72, "assistant_message", { source: "rollout", turnId: null, message: { role: "assistant", text: finalAssistantReply } }));
+  runtime.store.ingest(event("thread-active", 72, "assistant_message", { source: "rollout", turnId: null, phase: "final_answer", message: { role: "assistant", text: finalAssistantReply } }));
   bridge.set("thread-active", { status: "active", activeFlags: [], activeTurnId: "turn-thread-active" });
 
   let historyIndex = 1;
@@ -438,11 +485,13 @@ https://inside-fence.example
   assert.equal(await page.locator("#new-session-fast").isEnabled(), true, "Fast must be an actionable model capability");
   await page.locator("#new-session-fast-row").click();
   await page.locator("#new-session-fast-row").click();
+  await page.locator("#new-session-permission").selectOption("on-request");
+  assert.match(await page.locator("#new-session-permission-hint").innerText(), /手机审批/);
   await page.locator("#new-session-input").fill("从手机创建一个独立 Codex 会话并验证删除流程");
   await page.setViewportSize({ width: 390, height: 667 });
   const newSessionSubmitBox = await page.locator("#new-session-submit").boundingBox();
   assert.ok(newSessionSubmitBox && newSessionSubmitBox.y >= 0 && newSessionSubmitBox.y + newSessionSubmitBox.height <= 667, "the create-session action must remain visible after runtime settings expand");
-  assert.match(await page.locator("#new-session-submit-summary").innerText(), /phone-control.*gpt-5\.6-sol.*超高/);
+  assert.match(await page.locator("#new-session-submit-summary").innerText(), /phone-control.*gpt-5\.6-sol.*超高.*超出工作区/);
   await page.screenshot({ path: path.join(outputDir, "02-new-session-form.png"), fullPage: false });
   await page.locator("#new-session-submit").click();
   await page.setViewportSize({ width: 412, height: 915 });
@@ -454,6 +503,7 @@ https://inside-fence.example
   assert.equal(bridge.createdSessions[0].model, "gpt-5.6-sol");
   assert.equal(bridge.createdSessions[0].reasoningEffort, "xhigh");
   assert.equal(bridge.createdSessions[0].serviceTier, "priority");
+  assert.equal(bridge.createdSessions[0].permissionProfile, "on-request");
   await page.locator("#detail[open] [data-open-task-title]").click();
   assert.equal(await page.locator("#detail[open] .technical-details").getAttribute("open"), "", "the compact header naming action must reveal task-title controls directly");
   await page.locator('[data-task-title-form="thread-phone-created-1"] .task-title-suggest').waitFor();
@@ -468,9 +518,27 @@ https://inside-fence.example
   await page.locator('[data-task-title-form="thread-phone-created-1"] .task-title-reset').click();
   await page.locator("#detail[open] h2").filter({ hasText: /从手机创建一个独立 Codex 会话/ }).waitFor();
   assert.equal(await page.locator('[data-delete-session="thread-phone-created-1"]').isDisabled(), true, "an active session must not be deletable");
-  runtime.store.ingest(event("thread-phone-created-1", 1, "turn_complete", { turnId: "turn-phone-created-1" }));
+  runtime.store.ingest(event("thread-phone-created-1", 1, "turn_complete", { turnId: "turn-phone-created-1", surface: "Desktop" }));
   bridge.set("thread-phone-created-1", { status: "idle", activeFlags: [], activeTurnId: null });
   await page.waitForTimeout(400);
+  const handoffCreated = page.locator('[data-handoff-session="thread-phone-created-1"]');
+  await handoffCreated.waitFor();
+  assert.equal(await handoffCreated.isEnabled(), true, "an idle desktop-app session must expose desktop handoff");
+  page.once("dialog", async (dialog) => {
+    assert.match(dialog.message(), /移交到电脑端/);
+    await dialog.accept();
+  });
+  await handoffCreated.click();
+  const reclaimCreated = page.locator('[data-reclaim-session="thread-phone-created-1"]');
+  await reclaimCreated.waitFor();
+  assert.equal(bridge.handoffs[0].sessionId, "thread-phone-created-1");
+  page.once("dialog", async (dialog) => {
+    assert.match(dialog.message(), /重新由手机接管/);
+    await dialog.accept();
+  });
+  await reclaimCreated.click();
+  await page.locator('[data-handoff-session="thread-phone-created-1"]').waitFor();
+  assert.equal(bridge.reclaims[0].sessionId, "thread-phone-created-1");
   await page.locator("#detail-close").click();
   await page.locator('article[data-session-id="thread-phone-created-1"]').click();
   await page.locator("#detail[open] .technical-details summary").click();
@@ -485,6 +553,9 @@ https://inside-fence.example
   await deleteCreated.click();
   await page.locator('article[data-session-id="thread-phone-created-1"]').waitFor({ state: "detached" });
   assert.equal(bridge.deletedSessions[0].sessionId, "thread-phone-created-1");
+  assert.equal(await page.locator("#signal-toast").evaluate((element) => (
+    !element.matches(":popover-open") && !element.classList.contains("fallback-open")
+  )), true, "deleting a completed session must dismiss its stale completion toast");
 
   const detailRoute = /\/api\/sessions\/thread-active\?events=72$/;
   await page.route(detailRoute, async (route) => {
@@ -606,7 +677,7 @@ https://inside-fence.example
   assert.equal(await turnUpdates.getAttribute("open"), "", "process replies should still be open before a live refresh");
   await turnProcess.locator("summary").click();
   const updatesSummaryBefore = await turnUpdates.locator("summary").innerText();
-  runtime.store.ingest(event("thread-active", 72.2, "assistant_message", { source: "rollout", turnId: "turn-thread-active", message: { role: "assistant", text: "实时更新后的最新过程状态。" } }));
+  runtime.store.ingest(event("thread-active", 72.2, "assistant_message", { source: "rollout", turnId: "turn-thread-active", phase: "commentary", message: { role: "assistant", text: "实时更新后的最新过程状态。" } }));
   await waitUntil(async () => await turnUpdates.locator("summary").innerText() !== updatesSummaryBefore);
   assert.equal(await turnUpdates.getAttribute("open"), "", "an open process-reply group must survive live status updates");
   assert.equal(await turnProcess.getAttribute("open"), "", "an open run-details group must survive live status updates");
@@ -642,7 +713,7 @@ https://inside-fence.example
   await page.locator(".session-composer").waitFor();
   assert.equal(await page.locator("[data-session-input]").inputValue(), "这段手机草稿不应该被实时刷新打断");
   assert.equal(await page.locator(".attachment-preview").count(), 1);
-  runtime.store.ingest(event("thread-active", 73, "assistant_message", { message: { role: "assistant", text: "后台又产生了一条状态更新。" } }));
+  runtime.store.ingest(event("thread-active", 73, "assistant_message", { turnId: "turn-thread-active", phase: "commentary", message: { role: "assistant", text: "后台又产生了一条状态更新。" } }));
   bridge.connected = false;
   bridge.emit("status", bridge.status());
   await page.waitForTimeout(650);
@@ -753,6 +824,7 @@ https://inside-fence.example
   assert.equal(await page.locator('#runtime-settings-dialog [data-model-select] option[value="gpt-5.6-sol"]').count(), 1);
   await page.locator('#runtime-settings-dialog [data-model-select]').selectOption("gpt-5.6-sol");
   await page.locator('#runtime-settings-dialog [data-effort-value="xhigh"]').click();
+  await page.locator('#runtime-settings-dialog [data-permission-select]').selectOption("workspace-write");
   assert.equal(await page.locator('#runtime-settings-dialog [data-fast-toggle]').isEnabled(), true);
   const fastBox = await page.locator('#runtime-settings-dialog .fast-switch').boundingBox();
   const runtimeAfterSelection = await page.locator("#runtime-settings-dialog .composer-runtime-sheet").boundingBox();
@@ -761,7 +833,7 @@ https://inside-fence.example
   assert.equal(await page.locator('#runtime-settings-dialog [data-fast-toggle]').isChecked(), false);
   const submitAfterSettingsScroll = await page.locator("#detail[open] .command-submit").boundingBox();
   assert.ok(submitAfterSettingsScroll && Math.abs(submitAfterSettingsScroll.y - submitBox.y) <= 1, "scrolling runtime settings must not move the start-new-turn action");
-  assert.match(await page.locator("#detail[open] .turn-model-settings").innerText(), /gpt-5\.6-sol.*超高/);
+  assert.match(await page.locator("#detail[open] .turn-model-settings").innerText(), /gpt-5\.6-sol.*超高.*工作区内自动执行/);
   await page.locator("#runtime-settings-dialog [data-close-runtime]").click();
   await page.locator("#runtime-settings-dialog").waitFor({ state: "hidden" });
   assert.equal(await page.locator("#detail-close").isVisible(), true);

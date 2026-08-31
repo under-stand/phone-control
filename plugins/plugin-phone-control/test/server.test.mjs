@@ -16,6 +16,9 @@ class TestAppServerBridge extends EventEmitter {
     this.commands = new Map();
     this.interruptions = new Map();
     this.deletions = new Map();
+    this.handoffs = new Map();
+    this.reclaims = new Map();
+    this.handedOffThreads = new Map();
   }
 
   status() {
@@ -23,9 +26,12 @@ class TestAppServerBridge extends EventEmitter {
       connected: this.connected,
       initialized: this.connected,
       transport: "test",
+      handoffSupported: true,
       loadedThreads: Array.from(this.threads.keys()),
       subscribedThreads: Array.from(this.threads.keys()),
       threadStates: Object.fromEntries(this.threads),
+      handedOffThreads: Array.from(this.handedOffThreads.keys()),
+      unavailableThreadReasons: Object.fromEntries(this.handedOffThreads),
       pendingQuestions: this.interaction?.status === "pending" ? 1 : 0,
     };
   }
@@ -207,6 +213,50 @@ class TestAppServerBridge extends EventEmitter {
     return operation;
   }
 
+  async releaseForDesktop(body, device) {
+    const state = this.threads.get(body.sessionId);
+    if (state?.status !== "idle") throw Object.assign(new Error("Finish the current Codex turn before handoff"), { statusCode: 409 });
+    const affectedSessionIds = Array.from(this.threads.keys());
+    if (affectedSessionIds.length > 1 && !body.confirmSharedRelease) {
+      throw Object.assign(new Error("Shared release confirmation is required"), { statusCode: 409 });
+    }
+    const operation = {
+      id: `handoff-${this.handoffs.size + 1}`,
+      sessionId: body.sessionId,
+      affectedSessionIds,
+      action: "handoff",
+      delivery: "delivered",
+      status: "released",
+      releasedAt: new Date().toISOString(),
+      decidedBy: device.id,
+    };
+    this.handedOffThreads.set(body.sessionId, "This desktop session was handed off and is phone read-only");
+    this.handoffs.set(body.sessionId, operation);
+    this.threads.clear();
+    this.emit("status", this.status());
+    return operation;
+  }
+
+  async reclaimForPhone(body, device) {
+    if (!this.handedOffThreads.has(body.sessionId)) {
+      throw Object.assign(new Error("This session has not been handed off to the desktop"), { statusCode: 409 });
+    }
+    const operation = {
+      id: `reclaim-${this.reclaims.size + 1}`,
+      sessionId: body.sessionId,
+      action: "reclaim",
+      delivery: "delivered",
+      status: "acquired",
+      acquiredAt: new Date().toISOString(),
+      decidedBy: device.id,
+    };
+    this.handedOffThreads.delete(body.sessionId);
+    this.threads.set(body.sessionId, { status: "idle", activeFlags: [], activeTurnId: null });
+    this.reclaims.set(body.sessionId, operation);
+    this.emit("status", this.status());
+    return operation;
+  }
+
   async interruptTurn(body, device) {
     const state = this.threads.get(body.sessionId);
     if (state?.status !== "active" || !state.activeTurnId) {
@@ -295,12 +345,54 @@ export const tests = [
         assert.ok(address && typeof address === "object", "HTTP should listen before the initial rollout scan completes");
         const health = await request({ port: address.port, pathname: "/api/health" });
         assert.equal(health.status, 200);
+        assert.equal(health.body.ready, false);
         releaseScan();
         await startPromise;
+        const readyHealth = await request({ port: address.port, pathname: "/api/health" });
+        assert.equal(readyHealth.body.ready, true);
       } finally {
         releaseScan?.();
         await startPromise?.catch(() => {});
         if (runtime.server.listening) await runtime.close();
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: "keeps health liveness separate from App Server readiness",
+    async run() {
+      const dataDir = await mkdtemp(path.join(os.tmpdir(), "phone-control-readiness-test-"));
+      const bridge = new TestAppServerBridge();
+      bridge.start = async () => {
+        bridge.connected = false;
+        bridge.emit("status", bridge.status());
+        return false;
+      };
+      const runtime = await createPhoneControlServer({
+        config: { host: "127.0.0.1", port: 0, token: "test-token", dataDir },
+        scanRollouts: false,
+        appServerBridge: bridge,
+      });
+      try {
+        const started = await runtime.start();
+        const health = await request({ port: started.port, pathname: "/api/health" });
+        assert.equal(health.status, 200);
+        assert.equal(health.body.ok, true);
+        assert.equal(health.body.ready, false);
+        const paired = await request({
+          port: started.port,
+          pathname: "/api/auth",
+          method: "POST",
+          headers: { "x-phone-control-client": "1" },
+          body: { token: "test-token", name: "Readiness test" },
+        });
+        assert.equal(paired.status, 200);
+        const cookie = paired.headers["set-cookie"][0].split(";", 1)[0];
+        const status = await request({ port: started.port, pathname: "/api/status", headers: { cookie } });
+        assert.equal(status.status, 200);
+        assert.equal(status.body.ready, false);
+      } finally {
+        await runtime.close();
         await rm(dataDir, { recursive: true, force: true });
       }
     },
@@ -325,13 +417,13 @@ export const tests = [
         const page = await request({ port: started.port, pathname: "/" });
         assert.equal(page.status, 200);
         assert.match(page.headers["content-security-policy"], /default-src 'self'/);
-        assert.match(page.body, /app\.js\?v=55/);
+        assert.match(page.body, /app\.js\?v=63/);
         assert.match(page.body, /id="task-title">任务</);
         assert.doesNotMatch(page.body, /id="metrics"|任务概览|会话列表/);
 
         const compressedAsset = await request({
           port: started.port,
-          pathname: "/app.js?v=55",
+          pathname: "/app.js?v=63",
           headers: { "accept-encoding": "gzip" },
         });
         assert.equal(compressedAsset.status, 200);
@@ -826,7 +918,7 @@ export const tests = [
         assert.equal(detail.body.session.control.canAnswer, true);
         const status = await request({ port: started.port, pathname: "/api/status", headers: { cookie } });
         assert.equal(status.status, 200);
-        assert.equal(status.body.version, "0.8.0");
+      assert.equal(status.body.version, "0.9.2");
         assert.equal(status.body.codexHome, undefined);
         assert.equal(status.body.device, undefined);
         assert.equal(status.body.appServer.threadStates, undefined);
@@ -892,6 +984,7 @@ export const tests = [
             turnId: "turn-old",
             kind: "turn_complete",
             at: "2026-08-24T05:00:00.000Z",
+            surface: "Desktop",
             transcriptPath: "/tmp/thread-control.jsonl",
           },
         });
@@ -908,6 +1001,7 @@ export const tests = [
         const detail = await request({ port: started.port, pathname: "/api/sessions/thread-control", headers: { cookie } });
         assert.equal(detail.body.session.control.canSend, true);
         assert.equal(detail.body.session.control.action, "start");
+        assert.equal(detail.body.session.control.canHandoff, true);
         assert.equal(detail.body.session.control.expectedTurnId, null);
 
         const stale = await request({
@@ -958,6 +1052,73 @@ export const tests = [
         assert.equal(stopping.body.session.control.canInterrupt, false);
         assert.equal(stopping.body.session.control.canSend, false);
         assert.match(stopping.body.session.statusReason, /请求停止/);
+
+        bridge.threads.set("thread-control", { status: "idle", activeFlags: [], activeTurnId: null });
+        bridge.emit("status", bridge.status());
+        runtime.store.ingest({
+          eventId: "phone-controlled-turn-complete",
+          sessionId: "thread-control",
+          turnId: delivered.body.command.turnId,
+          kind: "turn_complete",
+          at: new Date().toISOString(),
+        });
+        const handedOff = await request({
+          port: started.port,
+          pathname: "/api/sessions/thread-control/handoff",
+          method: "POST",
+          headers: { cookie, "x-phone-control-client": "1" },
+          body: { confirmSharedRelease: true },
+        });
+        assert.equal(handedOff.status, 200);
+        assert.equal(handedOff.body.operation.status, "released");
+        const readOnly = await request({ port: started.port, pathname: "/api/sessions/thread-control", headers: { cookie } });
+        assert.equal(readOnly.body.session.control.handedOff, true);
+        assert.equal(readOnly.body.session.control.canSend, false);
+        assert.equal(readOnly.body.session.control.canReclaim, true);
+        const reclaimed = await request({
+          port: started.port,
+          pathname: "/api/sessions/thread-control/reclaim",
+          method: "POST",
+          headers: { cookie, "x-phone-control-client": "1" },
+          body: {},
+        });
+        assert.equal(reclaimed.status, 200);
+        assert.equal(reclaimed.body.operation.status, "acquired");
+        const mobileOwned = await request({ port: started.port, pathname: "/api/sessions/thread-control", headers: { cookie } });
+        assert.equal(mobileOwned.body.session.control.handedOff, false);
+        assert.equal(mobileOwned.body.session.control.canSend, true);
+        assert.equal(mobileOwned.body.session.control.action, "start");
+
+        runtime.store.ingest({
+          eventId: "cli-only-user",
+          sessionId: "thread-cli-only",
+          turnId: "turn-cli-only",
+          kind: "user_prompt",
+          at: "2026-08-24T05:01:00.000Z",
+          surface: "CLI",
+          message: { role: "user", text: "Continue in CLI" },
+        });
+        runtime.store.ingest({
+          eventId: "cli-only-complete",
+          sessionId: "thread-cli-only",
+          turnId: "turn-cli-only",
+          kind: "turn_complete",
+          at: "2026-08-24T05:01:01.000Z",
+          transcriptPath: "/tmp/thread-cli-only.jsonl",
+        });
+        bridge.load("thread-cli-only", { status: "idle", activeFlags: [], activeTurnId: null });
+        const cliDetail = await request({ port: started.port, pathname: "/api/sessions/thread-cli-only", headers: { cookie } });
+        assert.equal(cliDetail.body.session.control.canSend, true);
+        assert.equal(cliDetail.body.session.control.canHandoff, false);
+        const cliHandoff = await request({
+          port: started.port,
+          pathname: "/api/sessions/thread-cli-only/handoff",
+          method: "POST",
+          headers: { cookie, "x-phone-control-client": "1" },
+          body: { confirmSharedRelease: true },
+        });
+        assert.equal(cliHandoff.status, 409);
+        assert.match(cliHandoff.body.error, /desktop-app sessions/i);
       } finally {
         await runtime.close();
         await rm(dataDir, { recursive: true, force: true });

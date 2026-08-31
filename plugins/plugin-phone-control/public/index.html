@@ -7,7 +7,7 @@
     <meta name="description" content="在手机上实时追踪本机 Codex Desktop 和 CLI 任务。">
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/styles.css?v=55">
+    <link rel="stylesheet" href="/styles.css?v=63">
     <title>Phone Control</title>
   </head>
   <body>
@@ -20,10 +20,16 @@
         </a>
         <div class="top-actions">
           <button class="device-button" id="status-button" type="button" aria-label="查看运行状态">状态</button>
-          <button class="device-button" id="devices-button" type="button" aria-label="管理设备">设备</button>
           <button class="connection" id="connection" data-state="connecting" type="button" aria-label="立即检查并连接机器" title="点按立即检查连接">
             <span></span><b>连接中</b>
           </button>
+          <details class="top-menu" id="top-menu">
+            <summary class="top-menu-trigger" id="top-menu-trigger" aria-label="更多操作" aria-expanded="false">更多</summary>
+            <div class="top-menu-panel" role="menu" aria-label="更多操作">
+              <a class="top-menu-item browser-nav-button" href="/browser.html" role="menuitem">浏览器</a>
+              <button class="top-menu-item" id="devices-button" type="button" role="menuitem" aria-label="管理设备与配对">设备与配对</button>
+            </div>
+          </details>
         </div>
       </header>
 
@@ -139,7 +145,7 @@
         </section>
         <details class="session-setup-card runtime-setup" id="new-session-runtime">
           <summary class="setup-heading">
-            <span><small>运行配置</small><h3 id="runtime-setup-title">模型与推理强度</h3></span>
+            <span><small>运行配置</small><h3 id="runtime-setup-title">模型、推理与权限</h3></span>
             <b id="new-session-runtime-summary">跟随本机默认</b>
           </summary>
           <div class="runtime-setup-body" aria-labelledby="runtime-setup-title">
@@ -157,7 +163,17 @@
               <span><b>Fast</b><small id="new-session-fast-hint">正在检查当前模型是否支持</small></span>
               <input id="new-session-fast" type="checkbox" disabled><i aria-hidden="true"></i>
             </label>
-            <p class="setup-note" id="new-session-model-hint">权限和沙箱仍沿用本机 Codex 配置。</p>
+            <label class="model-choice permission-choice">权限
+              <span class="select-shell"><select id="new-session-permission">
+                <option value="">跟随本机 Codex 默认</option>
+                <option value="read-only">只读</option>
+                <option value="workspace-write">工作区内自动执行</option>
+                <option value="on-request">超出工作区时询问</option>
+                <option value="danger-full-access">完全访问电脑</option>
+              </select><img src="/icons/caret-down.svg" alt=""></span>
+              <small id="new-session-permission-hint">未覆盖本机的审批与沙箱设置</small>
+            </label>
+            <p class="setup-note" id="new-session-model-hint">模型、推理和权限只作用于这个会话。</p>
           </div>
         </details>
         <footer class="new-session-submit-bar">
@@ -189,6 +205,6 @@
       <span class="signal-toast-mark">✓</span>
       <span aria-live="polite"><b id="signal-toast-title">任务已完成</b><small id="signal-toast-body">点按查看最新结果</small></span>
     </button>
-    <script src="/app.js?v=55" type="module"></script>
+    <script src="/app.js?v=63" type="module"></script>
   </body>
 </html>

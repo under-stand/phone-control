@@ -1,0 +1,10 @@
+:root { color-scheme: dark; font: 14px/1.45 system-ui, sans-serif; }
+body { margin: 0; min-width: 290px; background: #101827; color: #edf3ff; }
+main { padding: 20px; }
+.status { display: flex; align-items: center; gap: 8px; color: #aebbd0; }
+.status span { width: 9px; height: 9px; border-radius: 50%; background: #f0a43b; box-shadow: 0 0 0 4px #f0a43b22; }
+.status.online span { background: #35d07f; box-shadow: 0 0 0 4px #35d07f22; }
+h1 { margin: 14px 0 8px; font-size: 22px; }
+p { margin: 0 0 16px; color: #aebbd0; }
+button { width: 100%; border: 0; border-radius: 10px; padding: 10px 12px; background: #2c6bed; color: white; font: inherit; font-weight: 700; cursor: pointer; }
+small { display: block; margin-top: 12px; color: #71809a; text-align: center; }

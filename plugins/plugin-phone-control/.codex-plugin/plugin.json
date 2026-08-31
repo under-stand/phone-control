@@ -1,7 +1,7 @@
 {
   "name": "plugin-phone-control",
-  "version": "0.8.0",
-  "description": "Track, answer, continue, and receive private alerts for Codex sessions from mobile.",
+  "version": "0.9.2+codex.20260831084716",
+  "description": "Track and control local Codex sessions and Chrome tabs from a paired phone.",
   "author": {
     "name": "Phone Control contributors"
   },
@@ -16,7 +16,7 @@
   "interface": {
     "displayName": "Phone Control",
     "shortDescription": "Follow local Codex work from your phone.",
-    "longDescription": "A local-first task dashboard for Codex Desktop and CLI sessions. Receive opt-in Web Push alerts, view minimized status, answer request_user_input, send sanitized images, create or permanently delete threads with safeguards, safely resume stored threads, steer verified active turns, and interrupt the exact active turn from a paired phone.",
+    "longDescription": "A local-first task dashboard for Codex Desktop and CLI sessions. Receive opt-in Web Push alerts, answer request_user_input, safely resume or steer turns, explicitly transfer verified desktop-app sessions between phone and computer, and use the optional loopback-only Chrome bridge to control ordinary web tabs from a paired phone.",
     "developerName": "Phone Control contributors",
     "category": "Productivity",
     "capabilities": [

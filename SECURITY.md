@@ -5,7 +5,18 @@ Phone Control 可以展示本机 Codex 会话、工作目录、工具名称和�
 
 ## 支持版本与漏洞报告
 
-当前仅维护最新的 `0.8.x` 版本。旧版本收到安全修复时应升级到最新发布版。
+当前仅维护最新的 `0.9.x` 版本。旧版本收到安全修复时应升级到最新发布版。
+
+Windows 的“移交电脑 / 手机接管”只对来源为 Desktop 的用户会话开放；CLI 会话既不显示按钮，
+服务端也拒绝所有权移交接口。“移交电脑”只在 Phone Control 自己管理的 stdio App Server 上开放，
+并要求共享进程内所有已订阅 thread 都处于空闲且没有待处理问题或审批。用户确认后，服务关闭该
+受管进程以释放 `active writer`，只把用户选择的 Desktop thread 标记为手机只读，再启动一个不加载
+该 thread 的新进程；共享进程中其他被短暂释放的会话仍可按原流程恢复。
+
+“手机接管”先以 `thread/read` 只读检查目标状态，再调用 `thread/resume` 并验证恢复结果为空闲；
+只有全部成功才清除只读标记。电脑端仍在运行或持有 active writer 时，服务保留已移交状态且不会
+自动重试；若状态在检查与恢复之间变为 active，或恢复结果异常，服务会重启自己管理的 App Server，
+立即回滚可能刚取得的写入权。共享 Unix Socket 不会被手机端关闭，也不宣称支持立即移交。
 
 请不要通过公开 Issue 报告漏洞。使用 GitHub 的
 [私密安全公告](https://github.com/under-stand/phone-control/security/advisories/new)，说明受影响版本、
@@ -36,6 +47,27 @@ Phone Control 可以展示本机 Codex 会话、工作目录、工具名称和�
 - API 不启用 CORS，写操作同时检查自定义客户端头、Fetch Site 和同源 Origin；
 - Hook ingestion 同时要求 bearer token 和 loopback 来源。
 
+## Chrome Browser Bridge
+
+浏览器控制是可选功能，能力等同于远程查看和操作已经登录的普通网页，应只授权给自己完全信任的
+配对设备。扩展使用 Chrome `debugger` API，因此 Chrome 会明确显示标签页正在被调试。扩展只把
+`http:`、`https:` 和空白新标签视为可控目标；`chrome://`、扩展页和 `file://` 不允许截图或操作。
+
+扩展的服务权限固定为 `http://127.0.0.1:8787/*`。内部浏览器 API 不接受网络请求：服务端同时验证
+TCP 回环来源、专用请求头和合法的 `chrome-extension://` Origin，并把当前服务进程首次连接的扩展
+Origin 固定下来。扩展重装导致 ID 改变时，需要重启 Phone Control 后重新连接。普通网页、手机网络
+和反向代理不能访问这些内部端点。与其他本机回环服务一样，同一用户权限下的恶意本地进程仍属于
+主机信任边界，可能伪造 HTTP 请求；Phone Control 不把 Chrome Bridge 当作本机恶意软件隔离层。
+
+手机侧浏览器 API 继续要求独立的已配对设备 Cookie和同源写确认。一个时刻只有一台设备持有 60 秒
+可续期控制租约；页面离开、设备退出或撤销会释放租约。点按、滚动和输入同时绑定截图 ID 与页面代数，
+页面变化后的旧截图操作会返回冲突。每次操作还携带 client action ID；五分钟内的网络重试共享同一
+执行结果，相同 ID 携带不同内容会被拒绝。防重放缓存只保存动作摘要，不保存输入正文，过大的结果不缓存。
+
+网页截图只保存在 Phone Control 进程内存和当前手机页面，不写入事件、审计或上传目录；新截图会
+替换旧截图，服务停止时清空。标签标题、URL、网页可见像素以及从手机输入的文字仍会经过本机服务和
+浏览器扩展，因此不要把浏览器控制权交给不可信设备，也不要在控制期间打开不希望手机看到的敏感页面。
+
 ## 数据最小化
 
 Hook 原始载荷不会整体写入磁盘。sidecar 只保留 session/thread 标识、cwd、model、状态、
@@ -59,15 +91,24 @@ Hook 原始载荷不会整体写入磁盘。sidecar 只保留 session/thread 标
 运行配置也由服务端约束。`/api/models` 只返回 App Server `model/list` 中的 ID、显示名、描述、
 默认/支持的推理等级、service tier、输入模态和默认标记，并附带最小化本机默认配置、机器名和从
 可见用户会话聚合的最近目录；不扫描文件系统，也不透传隐藏字段或完整配置。创建 thread 或开始新
-turn 时，服务端再次验证模型、effort、service tier，并要求工作目录是当前机器上存在的绝对目录。
-手机不能通过该入口改变审批策略、沙箱、工作区权限或运行中 turn 的配置。
+turn 时，服务端再次验证模型、effort、service tier、权限配置，并要求工作目录是当前机器上存在的绝对目录。
+权限只能从固定的 `read-only`、`workspace-write`、`on-request`、`danger-full-access` 档位选择；服务端
+把它们映射为 App Server 的审批与沙箱协议，不能注入任意 sandbox JSON。完全访问必须由前端二次确认并
+在请求中携带确认位，仍可能被 Codex 管理员策略拒绝。运行中的 `turn/steer` 不能改变这些配置。
 
 ## 手机审批
 
-手机审批默认关闭。启用后也只接管由手机开始或追加的精确 turn，并响应其同步
-`PermissionRequest` Hook 创建的 challenge；Desktop/CLI 发起的 turn 立即回退给 Codex 原审批
-通道，避免同一操作需要决定两次。挑战绑定事件、session 和 turn，短期过期且只能决定一次；
-重复响应返回冲突，决定者设备 ID 写入本地审计。任何传输或 sidecar 故障都会“拒绝替用户决定”。
+权限模式选择“超出工作区时询问”后，Phone Control 可以响应受管 App Server 发出的
+`item/commandExecution/requestApproval`、`item/fileChange/requestApproval` 和
+`item/permissions/requestApproval`。请求只在 thread/turn 与 Phone Control 已送达的手机命令精确匹配
+时才会显示；Desktop/CLI 所拥有 turn 的 server request 保持不响应，避免抢走原客户端的审批。HTTP
+决定再次携带并校验 session 与 turn，允许只映射为 `accept` 或完整请求权限的 turn 级授权，拒绝映射为
+`decline` 或空权限集。挑战只能决定一次；十分钟未处理时自动向 App Server 发送拒绝，轮次提前结束时
+遗留挑战立即失效。传输结果未知时不自动重试，决定设备与送达状态写入不含正文的本地审计。
+
+旧的同步 `PermissionRequest` Hook 审批仍默认关闭，可单独开启用于兼容旧流程；它同样只接管手机所
+拥有的精确 turn。挑战绑定事件、session 和 turn，短期过期且只能决定一次；重复响应返回冲突。
+App Server 原生审批不依赖这个兼容开关。
 
 ## 手机回答
 
@@ -81,13 +122,13 @@ Phone Control 的事件或审计日志。审计只记录问题 ID、绑定标识
 
 ## 手机新建、续聊、追加指令、中止与删除
 
-已配对设备可以提交当前机器的工作目录、第一条任务，以及实时 `model/list` 白名单内的可选模型、推理等级和 service tier，
+已配对设备可以提交当前机器的工作目录、第一条任务，以及实时 `model/list` 白名单内的可选模型、推理等级、service tier 和固定权限档位，
 服务端验证后调用 `thread/start` 和 `turn/start`。未选择时新 thread 沿用当前 App Server 默认配置；
-浏览器不能指定权限、沙箱或其他 App Server 参数。已配对设备也可以在会话详情中发送文本和图片。服务端
+浏览器不能指定权限档位以外的沙箱 JSON 或其他 App Server 参数。已配对设备也可以在会话详情中发送文本和图片。服务端
 根据受管 app-server 的实时状态选择操作：空闲
 thread 使用 `turn/start`，明确为 `idle`、`completed`、`error` 或 `aborted` 且存在 rollout 的
 历史 thread 先 `thread/resume`，运行中 turn 使用带 `expectedTurnId` 的 `turn/steer`。浏览器不能
-自行指定动作；错误或已经变化的 turn 会返回冲突。只有即将开始的新 turn 可以选择模型、推理等级与 Fast，
+自行指定动作；错误或已经变化的 turn 会返回冲突。只有即将开始的新 turn 可以选择模型、推理等级、Fast 与权限，
 运行中的 `turn/steer` 明确拒绝这些覆盖。
 
 所有恢复请求都设置 `excludeTurns: true`，仅附带最新一个 turn 的身份和状态且不加载 items。
@@ -124,11 +165,11 @@ thread ID、操作、设备与结果，不记录新建任务正文；被删除�
 文件同样在 15 分钟内过期，发送失败时立即清理。HTTP 客户端不能传入 `localImage` 路径，也不能
 重新使用或主动删除已经租出的文件。
 
-当前仍不允许手机编辑历史内容、改变权限/沙箱配置或绕过 Codex 审批；模型、推理等级、Fast 与 cwd
+当前仍不允许手机编辑历史内容、提交自定义沙箱配置或绕过 Codex 审批；模型、推理等级、Fast、固定权限档位与 cwd
 只允许在创建会话或开始下一 turn 时从服务端白名单/当前机器路径中选择，不会中途修改 active turn；
 唯一允许的历史破坏操作是上述显式确认的永久整会话删除。
-Hook 审批冒烟测试只覆盖 challenge 与 Hook 返回协议；Phone Control 目前不会接管 app-server
-原生的命令、文件或权限审批请求。
+Hook 审批与 App Server 原生命令、文件、权限审批都有独立协议测试；原生审批测试同时验证未知
+Desktop/CLI turn 不会被 Phone Control 响应。
 
 ## 离线通知
 

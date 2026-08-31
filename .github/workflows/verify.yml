@@ -26,4 +26,23 @@ jobs:
       - run: npm run verify
       - run: npx playwright install --with-deps chromium
       - run: npm run test:mobile
+      - run: npm run test:browser
       - run: npm audit --omit=dev
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: plugins/plugin-phone-control
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: plugins/plugin-phone-control/package-lock.json
+      - run: npm ci
+      - run: npm run verify
+      - run: npx playwright install chromium
+      - run: npm run test:browser

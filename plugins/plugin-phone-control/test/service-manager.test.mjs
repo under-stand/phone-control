@@ -7,6 +7,9 @@ import {
   buildSystemdUnit,
   buildTmuxLauncher,
   buildWindowsLauncher,
+  buildWindowsCallerGuard,
+  buildWindowsProcessCleanup,
+  buildWindowsProxyBootstrap,
   buildWindowsTaskAction,
   buildWindowsTaskRegistration,
   launchdServicePath,
@@ -86,6 +89,30 @@ export const tests = [
       assert.match(launcher, /while \(\$true\)/);
       assert.match(launcher, /4194304/);
       assert.match(launcher, /Start-Sleep -Seconds 2/);
+      assert.match(launcher, /Internet Settings/);
+      assert.match(launcher, /HTTP_PROXY/);
+      assert.match(launcher, /HTTPS_PROXY/);
+      assert.match(launcher, /NO_PROXY/);
+      assert.match(buildWindowsProxyBootstrap(), /ProxyOverride/);
+      assert.match(buildWindowsProxyBootstrap(), /socks5/);
+      const cleanup = buildWindowsProcessCleanup({
+        runtime: windows.runtime,
+        entry: "C:\\Users\\Me\\Phone Control\\repo\\bin\\phone-control.mjs",
+        dataDir: windows.dataDir,
+      });
+      assert.match(cleanup, /Get-CimInstance Win32_Process/);
+      assert.match(cleanup, /ParentProcessId/);
+      assert.match(cleanup, /Stop-Process/);
+      assert.match(cleanup, /phone-control\.mjs/);
+      const callerGuard = buildWindowsCallerGuard({
+        runtime: windows.runtime,
+        entry: "C:\\Users\\Me\\Phone Control\\repo\\bin\\phone-control.mjs",
+        dataDir: windows.dataDir,
+      });
+      assert.match(callerGuard, /Get-CimInstance Win32_Process/);
+      assert.match(callerGuard, /ParentProcessId/);
+      assert.match(callerGuard, /cannot stop or replace its own Windows service/);
+      assert.match(callerGuard, /exit 23/);
       assert.equal(
         buildWindowsTaskAction("C:\\Users\\Me\\.phone-control\\run-service.ps1"),
         'powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\\Users\\Me\\.phone-control\\run-service.ps1"',

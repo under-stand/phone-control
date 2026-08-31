@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { CodexAppServerBridge } from "../src/app-server-bridge.mjs";
 import { loadConfig } from "../src/config.mjs";
+import { PHONE_CONTROL_VERSION } from "../src/version.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -117,7 +118,8 @@ async function waitForPhoneSubscription(config, cookie, threadId, timeoutMs = 20
 const config = await loadConfig();
 const health = await request({ port: config.port, pathname: "/api/health" });
 assert.equal(health.statusCode, 200, "Phone Control is not reachable");
-assert.equal(health.body.version, "0.8.0", "Live Phone Control v0.8.0 is not running");
+  assert.equal(health.body.version, PHONE_CONTROL_VERSION, `Live Phone Control v${PHONE_CONTROL_VERSION} is not running`);
+  assert.equal(health.body.ready, true, "Phone Control HTTP is alive but App Server is not ready");
 assert.equal(config.interactions.enabled, true, "Live phone answers are disabled");
 
 let cookie = null;

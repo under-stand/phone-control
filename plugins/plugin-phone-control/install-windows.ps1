@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA 'PhoneControl'),
+  [string]$InstallRoot = (Join-Path $env:USERPROFILE '.phone-control'),
   [ValidateSet('Auto', 'Local', 'Tailscale')]
   [string]$Access = 'Auto',
   [switch]$SkipChecks
@@ -15,6 +15,13 @@ $MinimumNodeMajor = 22
 
 function Write-Step([string]$Message) {
   Write-Host "`n==> $Message" -ForegroundColor Cyan
+}
+
+function Copy-PluginBundle([string]$From, [string]$To) {
+  New-Item -ItemType Directory -Path $To -Force | Out-Null
+  Get-ChildItem -LiteralPath $From -Force |
+    Where-Object { $_.Name -notin @('.git', 'node_modules') } |
+    Copy-Item -Destination $To -Recurse -Force
 }
 
 function Refresh-ProcessPath {
@@ -33,14 +40,22 @@ function Find-Tool([string]$Name, [string[]]$Fallbacks = @()) {
 }
 
 function Invoke-Native([string]$File, [string[]]$Arguments, [string]$FailureMessage) {
+  $global:LASTEXITCODE = 0
   & $File @Arguments
-  if ($LASTEXITCODE -ne 0) { throw "$FailureMessage (exit $LASTEXITCODE)" }
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -ne 0) { throw "$FailureMessage (exit $exitCode)" }
+}
+
+function Test-Native([string]$File, [string[]]$Arguments) {
+  $global:LASTEXITCODE = 0
+  & $File @Arguments *> $null
+  return ($LASTEXITCODE -eq 0)
 }
 
 function Get-NodeMajor([string]$NodePath) {
   if (-not $NodePath) { return 0 }
   $version = (& $NodePath --version 2>$null | Select-Object -First 1)
-  if ($LASTEXITCODE -ne 0 -or $version -notmatch '^v?(\d+)') { return 0 }
+  if ($version -notmatch '^v?(\d+)') { return 0 }
   return [int]$Matches[1]
 }
 
@@ -60,7 +75,7 @@ function Install-WingetPackage([string]$Id, [string]$Label) {
   Refresh-ProcessPath
 }
 
-if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is unavailable; run this installer as a normal Windows user.' }
+if (-not $env:USERPROFILE) { throw 'USERPROFILE is unavailable; run this installer as a normal Windows user.' }
 
 Write-Host 'Phone Control for Windows' -ForegroundColor Magenta
 Write-Host 'Installs into your user profile and creates a current-user startup task.'
@@ -100,8 +115,7 @@ $codexFallbacks = @((Join-Path $env:APPDATA 'npm\codex.cmd'))
 $codex = Find-Tool 'codex.exe' $codexFallbacks
 $pluginCliReady = $false
 if ($codex) {
-  & $codex plugin --help *> $null
-  $pluginCliReady = ($LASTEXITCODE -eq 0)
+  $pluginCliReady = Test-Native $codex @('plugin', '--help')
 }
 if (-not $pluginCliReady) {
   Write-Step 'Installing the current Codex CLI for plugin support'
@@ -110,26 +124,45 @@ if (-not $pluginCliReady) {
   $codex = Find-Tool 'codex.exe' $codexFallbacks
 }
 if (-not $codex) { throw 'Codex was installed but codex.exe is not visible. Open a new PowerShell window and retry.' }
-& $codex plugin --help *> $null
-if ($LASTEXITCODE -ne 0) { throw 'This Codex build does not support plugins. Update Codex, then run this installer again.' }
-& $codex app-server --help *> $null
-if ($LASTEXITCODE -ne 0) { throw 'This Codex build does not provide app-server. Update Codex, then run this installer again.' }
+if (-not (Test-Native $codex @('plugin', '--help'))) { throw 'This Codex build does not support plugins. Update Codex, then run this installer again.' }
+if (-not (Test-Native $codex @('app-server', '--help'))) { throw 'This Codex build does not provide app-server. Update Codex, then run this installer again.' }
 
 $sourceRoot = Join-Path $InstallRoot 'source'
+# This public repository keeps the Codex marketplace at its root and the plugin under
+# plugins\plugin-phone-control. Keep the checkout layout identical for ZIP and Git installs.
 $pluginRoot = Join-Path $sourceRoot 'plugins\plugin-phone-control'
+$bundleRoot = if ($PSScriptRoot) { [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\') } else { $null }
+$bundleRepoRoot = if ($bundleRoot) { [IO.Path]::GetFullPath((Split-Path (Split-Path $bundleRoot -Parent) -Parent)).TrimEnd('\') } else { $null }
+$resolvedSourceRoot = [IO.Path]::GetFullPath($sourceRoot).TrimEnd('\')
+$bundleManifest = if ($bundleRoot) { Join-Path $bundleRoot '.codex-plugin\plugin.json' } else { $null }
+$localBundle = [bool]$bundleManifest -and (Test-Path -LiteralPath $bundleManifest)
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
 
 Write-Step 'Downloading Phone Control'
-if (Test-Path -LiteralPath (Join-Path $sourceRoot '.git')) {
+if ($localBundle -and -not (Test-Path -LiteralPath $sourceRoot)) {
+  Write-Host "Copying the local Phone Control bundle to $sourceRoot"
+  Copy-PluginBundle $bundleRepoRoot $sourceRoot
+} elseif ($localBundle -and -not (Test-Path -LiteralPath (Join-Path $sourceRoot '.git'))) {
+  if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot 'plugins\plugin-phone-control\.codex-plugin\plugin.json'))) {
+    throw "The install directory exists but is not a Phone Control bundle: $sourceRoot"
+  }
+  Write-Host "Refreshing the local Phone Control bundle at $sourceRoot"
+  Copy-PluginBundle $bundleRepoRoot $sourceRoot
+} elseif (Test-Path -LiteralPath (Join-Path $sourceRoot '.git')) {
+  $global:LASTEXITCODE = 0
   $origin = (& $git -C $sourceRoot remote get-url origin 2>$null | Select-Object -First 1)
-  if ($LASTEXITCODE -ne 0 -or $origin -notmatch 'under-stand/phone-control(?:\.git)?$') {
+  if ($LASTEXITCODE -ne 0) {
     throw "The existing source directory is not the Phone Control repository: $sourceRoot"
   }
-  $dirty = (& $git -C $sourceRoot status --porcelain)
-  if ($dirty) { throw "The managed checkout has local changes. Preserve or remove them before retrying: $sourceRoot" }
-  Invoke-Native $git @('-C', $sourceRoot, 'fetch', 'origin', 'main', '--tags') 'Could not refresh Phone Control'
-  Invoke-Native $git @('-C', $sourceRoot, 'checkout', 'main') 'Could not select the main branch'
-  Invoke-Native $git @('-C', $sourceRoot, 'pull', '--ff-only', 'origin', 'main') 'Could not update Phone Control'
+  if ($origin -notmatch 'under-stand/phone-control(?:\.git)?$') {
+    throw "The existing source directory is not the Phone Control repository: $sourceRoot"
+  } else {
+    $dirty = (& $git -C $sourceRoot status --porcelain)
+    if ($dirty) { throw "The managed checkout has local changes. Preserve or remove them before retrying: $sourceRoot" }
+    Invoke-Native $git @('-C', $sourceRoot, 'fetch', 'origin', 'main', '--tags') 'Could not refresh Phone Control'
+    Invoke-Native $git @('-C', $sourceRoot, 'checkout', 'main') 'Could not select the main branch'
+    Invoke-Native $git @('-C', $sourceRoot, 'pull', '--ff-only', 'origin', 'main') 'Could not update Phone Control'
+  }
 } elseif (Test-Path -LiteralPath $sourceRoot) {
   throw "The install directory already exists but is not a Git checkout: $sourceRoot"
 } else {
@@ -138,15 +171,6 @@ if (Test-Path -LiteralPath (Join-Path $sourceRoot '.git')) {
 if (-not (Test-Path -LiteralPath (Join-Path $pluginRoot '.codex-plugin\plugin.json'))) {
   throw "The downloaded repository does not contain Phone Control: $pluginRoot"
 }
-
-Write-Step 'Registering the Codex plugin'
-$marketplaces = (& $codex plugin marketplace list 2>&1 | Out-String)
-if ($LASTEXITCODE -ne 0) { throw 'Could not read the Codex plugin marketplaces.' }
-if ($marketplaces -match '(?m)^\s*phone-control\s+') {
-  Invoke-Native $codex @('plugin', 'marketplace', 'remove', $MarketplaceName) 'Could not refresh the existing Phone Control marketplace'
-}
-Invoke-Native $codex @('plugin', 'marketplace', 'add', $sourceRoot) 'Could not register the Phone Control marketplace'
-Invoke-Native $codex @('plugin', 'add', "$PluginName@$MarketplaceName") 'Could not install the Phone Control plugin'
 
 Write-Step 'Installing service dependencies'
 Push-Location $pluginRoot
@@ -159,6 +183,18 @@ try {
   Pop-Location
 }
 
+Write-Step 'Registering the Codex plugin'
+$entry = Join-Path $pluginRoot 'bin\phone-control.mjs'
+$marketplaceRoot = $sourceRoot
+$global:LASTEXITCODE = 0
+$marketplaces = (& $codex plugin marketplace list 2>&1 | Out-String)
+if ($LASTEXITCODE -ne 0) { throw 'Could not read the Codex plugin marketplaces.' }
+if ($marketplaces -match '(?m)^\s*phone-control\s+') {
+  Invoke-Native $codex @('plugin', 'marketplace', 'remove', $MarketplaceName) 'Could not refresh the existing Phone Control marketplace'
+}
+Invoke-Native $codex @('plugin', 'marketplace', 'add', $marketplaceRoot) 'Could not register the Phone Control marketplace'
+Invoke-Native $codex @('plugin', 'add', "$PluginName@$MarketplaceName") 'Could not install the Phone Control plugin'
+
 $publicUrl = $null
 if ($Access -ne 'Local') {
   $tailscaleFallbacks = @(
@@ -167,6 +203,7 @@ if ($Access -ne 'Local') {
   )
   $tailscale = Find-Tool 'tailscale.exe' $tailscaleFallbacks
   if ($tailscale) {
+    $global:LASTEXITCODE = 0
     $statusJson = (& $tailscale status --json 2>$null | Out-String)
     if ($LASTEXITCODE -eq 0 -and $statusJson) {
       try {
@@ -174,6 +211,7 @@ if ($Access -ne 'Local') {
         $dnsName = [string]$status.Self.DNSName
         if ($dnsName) {
           Write-Step 'Enabling private Tailscale access'
+          $global:LASTEXITCODE = 0
           & $tailscale serve --bg 8787
           if ($LASTEXITCODE -eq 0) { $publicUrl = 'https://' + $dnsName.TrimEnd('.') }
           elseif ($Access -eq 'Tailscale') { throw 'Tailscale Serve could not be enabled. Review the Tailscale message above.' }
@@ -196,7 +234,6 @@ if ($publicUrl) {
   $env:PHONE_CONTROL_PUBLIC_URL = $publicUrl
   $env:PHONE_CONTROL_SECURE_COOKIES = '1'
 }
-$entry = Join-Path $pluginRoot 'bin\phone-control.mjs'
 Invoke-Native $node @(
   $entry,
   'service', 'install',
@@ -209,7 +246,7 @@ $healthy = $false
 for ($attempt = 0; $attempt -lt 20; $attempt += 1) {
   try {
     $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8787/api/health' -TimeoutSec 2
-    if ($health.ok) { $healthy = $true; break }
+    if ($health.ok -and $health.ready -eq $true) { $healthy = $true; break }
   } catch {}
   Start-Sleep -Milliseconds 500
 }

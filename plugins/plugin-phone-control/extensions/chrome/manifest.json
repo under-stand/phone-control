@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "minimum_chrome_version": "110",
+  "name": "Phone Control Browser Bridge",
+  "version": "0.1.0",
+  "description": "让本机 Phone Control 接管你选择的 Chrome 网页标签页。",
+  "permissions": ["debugger", "storage", "tabs"],
+  "host_permissions": ["http://127.0.0.1:8787/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Phone Control 浏览器连接",
+    "default_popup": "popup.html"
+  }
+}

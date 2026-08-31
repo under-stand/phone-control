@@ -11,12 +11,15 @@ function transportHarness({
   runtimeByThread = {},
   resumeErrors = {},
   ignoreExcludeTurnsFor = [],
+  resumeDelayMs = 0,
 } = {}) {
   const readable = new PassThrough();
   const writable = new PassThrough();
   const sent = [];
   let buffer = "";
   let createdThreadIndex = 0;
+  let activeResumes = 0;
+  let maxActiveResumes = 0;
   writable.on("data", (chunk) => {
     buffer += chunk.toString("utf8");
     let newline;
@@ -103,36 +106,57 @@ function transportHarness({
           },
         })}\n`);
       }
-      if (message.method === "thread/resume" && message.id != null) {
-        const resumeError = resumeErrors[message.params.threadId];
-        if (resumeError) {
-          readable.write(`${JSON.stringify({
-            id: message.id,
-            error: { code: -32600, message: resumeError },
-          })}\n`);
-          continue;
-        }
+      if (message.method === "thread/read" && message.id != null) {
         const runtime = runtimeByThread[message.params.threadId] || {};
-        const turns = runtime.turns || [];
-        const excludeTurns = message.params.excludeTurns && !ignoreExcludeTurnsFor.includes(message.params.threadId);
-        const initialTurnsPage = message.params.initialTurnsPage
-          ? {
-            data: [...turns].reverse().slice(0, message.params.initialTurnsPage.limit || 1)
-              .map((turn) => ({ ...turn, items: [] })),
-            nextCursor: turns.length > 1 ? "next" : null,
-          }
-          : null;
         readable.write(`${JSON.stringify({
           id: message.id,
           result: {
             thread: {
               id: message.params.threadId,
-              status: runtime.status || { type: "idle" },
-              turns: excludeTurns ? [] : turns,
+              status: runtime.readStatus || { type: "notLoaded" },
+              turns: message.params.includeTurns === false ? [] : runtime.turns || [],
             },
-            initialTurnsPage,
           },
         })}\n`);
+      }
+      if (message.method === "thread/resume" && message.id != null) {
+        const resumeError = resumeErrors[message.params.threadId];
+        const finishResume = () => {
+          activeResumes -= 1;
+          if (resumeError) {
+            readable.write(`${JSON.stringify({
+              id: message.id,
+              error: { code: -32600, message: resumeError },
+            })}\n`);
+            return;
+          }
+          const runtime = runtimeByThread[message.params.threadId] || {};
+          const turns = runtime.turns || [];
+          const excludeTurns = message.params.excludeTurns && !ignoreExcludeTurnsFor.includes(message.params.threadId);
+          const initialTurnsPage = message.params.initialTurnsPage
+            ? {
+              data: [...turns].reverse().slice(0, message.params.initialTurnsPage.limit || 1)
+                .map((turn) => ({ ...turn, items: [] })),
+              nextCursor: turns.length > 1 ? "next" : null,
+            }
+            : null;
+          readable.write(`${JSON.stringify({
+            id: message.id,
+            result: {
+              thread: {
+                id: message.params.threadId,
+                status: runtime.status || { type: "idle" },
+                turns: excludeTurns ? [] : turns,
+              },
+              initialTurnsPage,
+            },
+          })}\n`);
+        };
+        activeResumes += 1;
+        maxActiveResumes = Math.max(maxActiveResumes, activeResumes);
+        if (resumeDelayMs > 0) setTimeout(finishResume, resumeDelayMs);
+        else finishResume();
+        continue;
       }
       if (message.method === "thread/start" && message.id != null) {
         createdThreadIndex += 1;
@@ -151,6 +175,9 @@ function transportHarness({
         delete runtimeByThread[threadId];
         readable.write(`${JSON.stringify({ id: message.id, result: {} })}\n`);
         readable.write(`${JSON.stringify({ method: "thread/deleted", params: { threadId } })}\n`);
+      }
+      if (message.method === "thread/unsubscribe" && message.id != null) {
+        readable.write(`${JSON.stringify({ id: message.id, result: {} })}\n`);
       }
       if (message.method === "turn/start" && message.id != null) {
         const turnId = `turn-started-${sent.filter((item) => item.method === "turn/start").length}`;
@@ -178,11 +205,44 @@ function transportHarness({
   };
   return {
     sent,
+    get maxActiveResumes() { return maxActiveResumes; },
     transportFactory: async () => transport,
     serverSend(message) {
       readable.write(`${JSON.stringify(message)}\n`);
     },
   };
+}
+
+function managedTransportSequence(sourceOptions) {
+  const sources = sourceOptions.map((options) => transportHarness(options));
+  let factoryCalls = 0;
+  return {
+    sources,
+    get factoryCalls() { return factoryCalls; },
+    async transportFactory() {
+      const source = sources[factoryCalls++];
+      if (!source) throw new Error("Unexpected extra managed App Server transport");
+      const transport = await source.transportFactory();
+      let resolveClosed;
+      const closed = new Promise((resolve) => { resolveClosed = resolve; });
+      return {
+        ...transport,
+        kind: "managed-stdio",
+        closed,
+        close() {
+          transport.close();
+          resolveClosed({ code: 0, signal: null });
+        },
+      };
+    },
+  };
+}
+
+function managedHandoffHarness() {
+  return managedTransportSequence([
+    { loadedThreads: ["thread-live", "thread-idle-2"] },
+    { loadedThreads: [] },
+  ]);
 }
 
 export const tests = [
@@ -237,7 +297,7 @@ export const tests = [
       try {
         assert.equal(await bridge.start(), true);
         const initialize = harness.sent.find((message) => message.method === "initialize");
-        assert.equal(initialize.params.clientInfo.version, "0.8.0");
+        assert.equal(initialize.params.clientInfo.version, "0.9.2");
         assert.equal(initialize.params.capabilities.experimentalApi, true);
         assert.ok(initialize.params.capabilities.optOutNotificationMethods.includes("item/agentMessage/delta"));
         assert.ok(initialize.params.capabilities.optOutNotificationMethods.includes("item/completed"));
@@ -409,6 +469,7 @@ export const tests = [
           model: "gpt-choice",
           reasoningEffort: "high",
           serviceTier: "priority",
+          permissionProfile: "on-request",
         }, { id: "device-1", name: "Test phone" });
         assert.equal(command.action, "start");
         assert.equal(command.delivery, "delivered");
@@ -419,9 +480,12 @@ export const tests = [
         assert.equal(request.params.model, "gpt-choice");
         assert.equal(request.params.effort, "high");
         assert.equal(request.params.serviceTier, "priority");
+        assert.equal(request.params.approvalPolicy, "onRequest");
+        assert.deepEqual(request.params.sandboxPolicy, { type: "workspaceWrite", writableRoots: [], networkAccess: false });
         assert.equal(command.model, "gpt-choice");
         assert.equal(command.reasoningEffort, "high");
         assert.equal(command.serviceTier, "priority");
+        assert.equal(command.permissionProfile, "on-request");
         await assert.rejects(
           bridge.sendInput({
             sessionId: "thread-live",
@@ -486,6 +550,147 @@ export const tests = [
         assert.equal(deleted.status, "deleted");
         assert.equal(harness.sent.some((message) => message.method === "thread/delete" && message.params.threadId === created.sessionId), true);
         assert.equal(bridge.status().loadedThreads.includes(created.sessionId), false);
+      } finally {
+        await bridge.close();
+      }
+    },
+  },
+  {
+    name: "applies a validated permission profile to new threads and turns",
+    async run() {
+      const workingDirectory = os.tmpdir();
+      const harness = transportHarness({ loadedThreads: [] });
+      const bridge = new CodexAppServerBridge({ transportFactory: harness.transportFactory, reconnect: false, loadedThreadRefreshMs: 0 });
+      try {
+        await bridge.start();
+        const command = await bridge.createSession({
+          text: "Work inside this project",
+          cwd: workingDirectory,
+          permissionProfile: "on-request",
+          clientMessageId: "phone-permission-profile-0001",
+        });
+        const threadStart = harness.sent.find((message) => message.method === "thread/start");
+        assert.equal(threadStart.params.approvalPolicy, "onRequest");
+        assert.equal(threadStart.params.sandbox, "workspaceWrite");
+        const turnStart = harness.sent.find((message) => message.method === "turn/start");
+        assert.equal(turnStart.params.approvalPolicy, "onRequest");
+        assert.deepEqual(turnStart.params.sandboxPolicy, {
+          type: "workspaceWrite",
+          writableRoots: [workingDirectory],
+          networkAccess: false,
+        });
+        assert.equal(command.permissionProfile, "on-request");
+        assert.equal(command.permissionMode, "workspace-write");
+        assert.equal(command.approvalPolicy, "onRequest");
+      } finally {
+        await bridge.close();
+      }
+    },
+  },
+  {
+    name: "requires confirmation for full access and answers native approvals only for phone-owned turns",
+    async run() {
+      const workingDirectory = os.tmpdir();
+      const harness = transportHarness({ loadedThreads: [] });
+      const bridge = new CodexAppServerBridge({ transportFactory: harness.transportFactory, reconnect: false, loadedThreadRefreshMs: 0 });
+      try {
+        await bridge.start();
+        await assert.rejects(bridge.createSession({
+          text: "Unconfirmed full access",
+          cwd: workingDirectory,
+          permissionProfile: "danger-full-access",
+          clientMessageId: "phone-full-access-denied-0001",
+        }), (error) => error.statusCode === 400);
+        const command = await bridge.createSession({
+          text: "Ask before escalation",
+          cwd: workingDirectory,
+          permissionProfile: "on-request",
+          clientMessageId: "phone-native-approval-0001",
+        }, { id: "device-1", name: "Test phone" });
+        const received = once(bridge, "approval");
+        harness.serverSend({
+          id: 900,
+          method: "item/commandExecution/requestApproval",
+          params: {
+            threadId: command.sessionId,
+            turnId: command.turnId,
+            itemId: "item-command-1",
+            reason: "Needs access outside the workspace",
+            command: ["powershell", "-File", "install.ps1"],
+            cwd: workingDirectory,
+          },
+        });
+        const [approval] = await received;
+        assert.equal(approval.sessionId, command.sessionId);
+        assert.equal(approval.details.command, "powershell -File install.ps1");
+        assert.equal(bridge.listApprovals().length, 1);
+        const decided = await bridge.decideApproval(approval.id, {
+          decision: "allow",
+          sessionId: command.sessionId,
+          turnId: command.turnId,
+        }, { id: "device-1" });
+        assert.equal(decided.status, "allowed");
+        assert.deepEqual(harness.sent.find((message) => message.id === 900), { id: 900, result: { decision: "accept" } });
+        assert.equal(bridge.listApprovals().length, 0);
+
+        const permissionReceived = once(bridge, "approval");
+        harness.serverSend({
+          id: 902,
+          method: "item/permissions/requestApproval",
+          params: {
+            threadId: command.sessionId,
+            turnId: command.turnId,
+            itemId: "item-permissions-1",
+            reason: "Needs network access",
+            permissions: { network: { enabled: true, domains: ["example.com"] } },
+          },
+        });
+        const [permissionApproval] = await permissionReceived;
+        assert.match(permissionApproval.details.permissionRequest, /example\.com/);
+        await bridge.decideApproval(permissionApproval.id, {
+          decision: "deny",
+          sessionId: command.sessionId,
+          turnId: command.turnId,
+        });
+        assert.deepEqual(harness.sent.find((message) => message.id === 902), {
+          id: 902,
+          result: { permissions: {}, scope: "turn" },
+        });
+
+        const expiringReceived = once(bridge, "approval");
+        harness.serverSend({
+          id: 903,
+          method: "item/fileChange/requestApproval",
+          params: { threadId: command.sessionId, turnId: command.turnId, itemId: "item-file-expiring", grantRoot: "/private" },
+        });
+        const [expiringApproval] = await expiringReceived;
+        await bridge.expireNativeApproval(expiringApproval.id);
+        assert.deepEqual(harness.sent.find((message) => message.id === 903), { id: 903, result: { decision: "decline" } });
+        assert.equal(bridge.getApproval(expiringApproval.id).status, "expired");
+        assert.equal(bridge.getApproval(expiringApproval.id).delivery, "delivered");
+
+        const staleReceived = once(bridge, "approval");
+        harness.serverSend({
+          id: 904,
+          method: "item/commandExecution/requestApproval",
+          params: { threadId: command.sessionId, turnId: command.turnId, itemId: "item-command-stale", command: ["echo", "stale"] },
+        });
+        const [staleApproval] = await staleReceived;
+        const unavailable = once(bridge, "approvalUnavailable");
+        harness.serverSend({ method: "turn/completed", params: { threadId: command.sessionId, turn: { id: command.turnId } } });
+        const [unavailableApproval] = await unavailable;
+        assert.equal(unavailableApproval.id, staleApproval.id);
+        assert.match(unavailableApproval.unavailableReason, /turn completed/i);
+        assert.equal(bridge.listApprovals().length, 0);
+
+        harness.serverSend({
+          id: 901,
+          method: "item/fileChange/requestApproval",
+          params: { threadId: "thread-desktop", turnId: "turn-desktop", itemId: "item-file-1", grantRoot: "/private" },
+        });
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(bridge.listApprovals().length, 0);
+        assert.equal(harness.sent.some((message) => message.id === 901), false);
       } finally {
         await bridge.close();
       }
@@ -672,6 +877,26 @@ export const tests = [
     },
   },
   {
+    name: "subscribes loaded threads with bounded metadata concurrency",
+    async run() {
+      const loadedThreads = ["thread-1", "thread-2", "thread-3", "thread-4", "thread-5"];
+      const harness = transportHarness({ loadedThreads, resumeDelayMs: 25 });
+      const bridge = new CodexAppServerBridge({
+        transportFactory: harness.transportFactory,
+        reconnect: false,
+        loadedThreadRefreshMs: 0,
+        subscriptionConcurrency: 2,
+      });
+      try {
+        assert.equal(await bridge.start(), true);
+        assert.equal(harness.maxActiveResumes, 2);
+        assert.deepEqual(new Set(bridge.status().subscribedThreads), new Set(loadedThreads));
+      } finally {
+        await bridge.close();
+      }
+    },
+  },
+  {
     name: "allows a creation grace period then stops retrying a permanently missing rollout",
     async run() {
       const harness = transportHarness({
@@ -717,6 +942,12 @@ export const tests = [
         assert.equal(await bridge.start(), true);
         assert.equal(bridge.status().loadedThreads.includes("thread-live"), true);
         assert.equal(bridge.status().subscribedThreads.includes("thread-live"), true);
+        bridge.rememberCommand({
+          id: "phone-question-owner",
+          sessionId: "thread-live",
+          turnId: "turn-live",
+          status: "delivered",
+        });
         const questionEvent = once(bridge, "question");
         harness.serverSend({
           id: "rpc-question-1",
@@ -783,12 +1014,74 @@ export const tests = [
     },
   },
   {
+    name: "does not claim request_user_input from a desktop or CLI turn",
+    async run() {
+      const harness = transportHarness();
+      const bridge = new CodexAppServerBridge({ transportFactory: harness.transportFactory, reconnect: false });
+      const unsupported = [];
+      bridge.on("unsupportedRequest", (request) => unsupported.push(request));
+      try {
+        await bridge.start();
+        harness.serverSend({
+          id: "desktop-question-1",
+          method: "item/tool/requestUserInput",
+          params: {
+            threadId: "thread-desktop",
+            turnId: "turn-desktop",
+            itemId: "item-desktop-question",
+            questions: [{ id: "choice", header: "选择", question: "请选择" }],
+          },
+        });
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(bridge.list().length, 0);
+        assert.deepEqual(unsupported, [{ method: "item/tool/requestUserInput" }]);
+        assert.equal(harness.sent.some((message) => message.id === "desktop-question-1" && message.result), false);
+
+        bridge.rememberCommand({ id: "phone-question-owner-late", sessionId: "thread-live", turnId: "turn-late", status: "delivered" });
+        const questionEvent = once(bridge, "question");
+        harness.serverSend({
+          id: "phone-question-late",
+          method: "item/tool/requestUserInput",
+          params: {
+            threadId: "thread-live",
+            turnId: "turn-late",
+            itemId: "item-late-question",
+            questions: [{ id: "choice", header: "选择", question: "请选择" }],
+          },
+        });
+        const [interaction] = await questionEvent;
+        const unavailableEvent = once(bridge, "unavailable");
+        harness.serverSend({ method: "turn/completed", params: { threadId: "thread-live", turn: { id: "turn-late" } } });
+        const [unavailable] = await unavailableEvent;
+        assert.equal(unavailable.id, interaction.id);
+        assert.equal(unavailable.canRespond, false);
+        const lateUnsupported = unsupported.length;
+        harness.serverSend({
+          id: "phone-question-late-2",
+          method: "item/tool/requestUserInput",
+          params: {
+            threadId: "thread-live",
+            turnId: "turn-late",
+            itemId: "item-late-question-2",
+            questions: [{ id: "choice", header: "选择", question: "请选择" }],
+          },
+        });
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(bridge.list().length, 0);
+        assert.equal(unsupported.length, lateUnsupported + 1);
+      } finally {
+        await bridge.close();
+      }
+    },
+  },
+  {
     name: "rejects free-form values when a question only allows displayed options",
     async run() {
       const harness = transportHarness();
       const bridge = new CodexAppServerBridge({ transportFactory: harness.transportFactory, reconnect: false });
       try {
         await bridge.start();
+        bridge.rememberCommand({ id: "phone-question-owner-2", sessionId: "thread-live", turnId: "turn-live", status: "delivered" });
         const questionEvent = once(bridge, "question");
         harness.serverSend({
           id: 99,
@@ -826,6 +1119,7 @@ export const tests = [
       const bridge = new CodexAppServerBridge({ transportFactory: harness.transportFactory, reconnect: false });
       try {
         await bridge.start();
+        bridge.rememberCommand({ id: "phone-question-owner-3", sessionId: "thread-live", turnId: "turn-live", status: "delivered" });
         const questionEvent = once(bridge, "question");
         harness.serverSend({
           id: "shared-request",
@@ -855,6 +1149,128 @@ export const tests = [
           }),
           (error) => error.statusCode === 409,
         );
+      } finally {
+        await bridge.close();
+      }
+    },
+  },
+  {
+    name: "hands a desktop session off and requires an explicit safe phone reclaim",
+    async run() {
+      const harness = managedHandoffHarness();
+      const bridge = new CodexAppServerBridge({
+        platform: "win32",
+        transportMode: "stdio",
+        transportFactory: harness.transportFactory,
+        reconnect: false,
+        loadedThreadRefreshMs: 0,
+      });
+      try {
+        assert.equal(await bridge.start(), true);
+        assert.equal(bridge.status().handoffSupported, true);
+        await assert.rejects(
+          bridge.releaseForDesktop({ sessionId: "thread-live" }),
+          (error) => error.statusCode === 409 && /confirmation/i.test(error.message),
+        );
+        const operation = await bridge.releaseForDesktop({ sessionId: "thread-live", confirmSharedRelease: true }, { id: "phone-1", name: "Phone" });
+        assert.equal(operation.status, "released");
+        assert.equal(operation.bridgeReconnected, true);
+        assert.deepEqual(operation.affectedSessionIds, ["thread-live", "thread-idle-2"]);
+        assert.equal(harness.factoryCalls, 2);
+        assert.deepEqual(bridge.status().loadedThreads, []);
+        assert.deepEqual(bridge.status().subscribedThreads, []);
+        assert.deepEqual(bridge.status().handedOffThreads, ["thread-live"]);
+        await assert.rejects(
+          bridge.resumeForControl("thread-live"),
+          (error) => error.statusCode === 409 && /handed off/i.test(error.message),
+        );
+        const reclaimed = await bridge.reclaimForPhone({ sessionId: "thread-live" }, { id: "phone-1", name: "Phone" });
+        assert.equal(reclaimed.status, "acquired");
+        assert.deepEqual(bridge.status().handedOffThreads, []);
+        assert.deepEqual(bridge.status().loadedThreads, ["thread-live"]);
+        assert.deepEqual(bridge.status().subscribedThreads, ["thread-live"]);
+        assert.equal(bridge.status().threadStates["thread-live"].status, "idle");
+        const secondTransportCalls = harness.sources[1].sent;
+        const readIndex = secondTransportCalls.findIndex((message) => message.method === "thread/read" && message.params.threadId === "thread-live");
+        const resumeIndex = secondTransportCalls.findIndex((message) => message.method === "thread/resume" && message.params.threadId === "thread-live");
+        assert.ok(readIndex >= 0 && resumeIndex > readIndex);
+        assert.equal(secondTransportCalls[readIndex].params.includeTurns, false);
+      } finally {
+        await bridge.close();
+      }
+    },
+  },
+  {
+    name: "keeps a handed-off desktop session read-only when its active writer remains",
+    async run() {
+      const harness = transportHarness({
+        loadedThreads: [],
+        runtimeByThread: { "thread-owned": { readStatus: { type: "idle" } } },
+        resumeErrors: { "thread-owned": "thread already has an active writer in another application" },
+      });
+      const bridge = new CodexAppServerBridge({
+        platform: "win32",
+        transportMode: "stdio",
+        transportFactory: async () => ({ ...(await harness.transportFactory()), kind: "managed-stdio" }),
+        reconnect: false,
+        loadedThreadRefreshMs: 0,
+      });
+      try {
+        assert.equal(await bridge.start(), true);
+        bridge.handedOffThreads.set("thread-owned", {
+          at: new Date().toISOString(),
+          reason: "This desktop session was handed off and is phone read-only",
+        });
+        await assert.rejects(
+          bridge.reclaimForPhone({ sessionId: "thread-owned" }, { id: "phone-1", name: "Phone" }),
+          (error) => error.statusCode === 409 && /desktop still owns/i.test(error.message),
+        );
+        assert.deepEqual(bridge.status().handedOffThreads, ["thread-owned"]);
+        assert.deepEqual(bridge.status().loadedThreads, []);
+        assert.deepEqual(bridge.status().subscribedThreads, []);
+      } finally {
+        await bridge.close();
+      }
+    },
+  },
+  {
+    name: "restarts the managed App Server when a reclaimed session races to active",
+    async run() {
+      const harness = managedTransportSequence([
+        {
+          loadedThreads: [],
+          runtimeByThread: {
+            "thread-race": {
+              readStatus: { type: "idle" },
+              status: { type: "active", activeFlags: [] },
+              turns: [{ id: "turn-race", status: "inProgress", items: [] }],
+            },
+          },
+        },
+        { loadedThreads: [] },
+      ]);
+      const bridge = new CodexAppServerBridge({
+        platform: "win32",
+        transportMode: "stdio",
+        transportFactory: harness.transportFactory,
+        reconnect: false,
+        loadedThreadRefreshMs: 0,
+      });
+      try {
+        assert.equal(await bridge.start(), true);
+        bridge.handedOffThreads.set("thread-race", {
+          at: new Date().toISOString(),
+          reason: "This desktop session was handed off and is phone read-only",
+        });
+        await assert.rejects(
+          bridge.reclaimForPhone({ sessionId: "thread-race" }, { id: "phone-1", name: "Phone" }),
+          (error) => error.statusCode === 409 && /became active/i.test(error.message),
+        );
+        assert.equal(harness.factoryCalls, 2);
+        assert.equal(bridge.status().connected, true);
+        assert.deepEqual(bridge.status().handedOffThreads, ["thread-race"]);
+        assert.deepEqual(bridge.status().loadedThreads, []);
+        assert.deepEqual(bridge.status().subscribedThreads, []);
       } finally {
         await bridge.close();
       }

@@ -22,18 +22,30 @@ function semanticMessageKey(event) {
   return [event.sessionId, event.kind, event.message.role || "", event.message.text].join("\u0000");
 }
 
-function isSemanticMessageDuplicate(events, event) {
+function separatesAssistantMessages(candidate, event) {
+  if (!["user_prompt", "turn_start", "turn_complete", "session_end", "error", "aborted"].includes(candidate.kind)) return false;
+  return !(event.turnId && candidate.turnId === event.turnId);
+}
+
+function findSemanticMessageDuplicate(events, event) {
   const key = semanticMessageKey(event);
-  if (!key) return false;
+  if (!key) return null;
   const at = Date.parse(event.at);
-  if (!Number.isFinite(at)) return false;
+  if (!Number.isFinite(at)) return null;
   for (let index = events.length - 1; index >= Math.max(0, events.length - 24); index -= 1) {
     const previous = events[index];
+    if (event.kind === "assistant_message" && separatesAssistantMessages(previous, event)) break;
     if (previous.source !== "rollout" || previous.kind !== event.kind || previous.message?.role !== event.message.role || previous.message?.text !== event.message.text) continue;
     const previousAt = Date.parse(previous.at);
-    if (Number.isFinite(previousAt) && Math.abs(at - previousAt) <= MESSAGE_DUPLICATE_WINDOW_MS) return true;
+    if (Number.isFinite(previousAt) && Math.abs(at - previousAt) <= MESSAGE_DUPLICATE_WINDOW_MS) return previous;
+    // A current rollout writes the final assistant text first as a response_item
+    // and later repeats it in task_complete. The latter has the useful turn id,
+    // but can arrive well beyond the short event/response-item dedupe window.
+    // Within one unbroken turn, an identical assistant row is still one message.
+    if (event.kind === "assistant_message"
+      && (!previous.turnId || !event.turnId || previous.turnId === event.turnId)) return previous;
   }
-  return false;
+  return null;
 }
 
 function enrichDuplicateMessage(session, event) {
@@ -58,10 +70,14 @@ function enrichDuplicateMessage(session, event) {
 }
 
 function enrichDuplicateProvenance(session, event) {
-  if (!event?.eventId || (!event.model && !event.reasoningEffort && !event.serviceTier)) return false;
+  if (!event?.eventId || (!event.turnId && !event.model && !event.reasoningEffort && !event.serviceTier && !event.phase)) return false;
   const existing = session?.events.find((candidate) => candidate.eventId === event.eventId);
   if (!existing) return false;
   let changed = false;
+  if (event.turnId && !existing.turnId) {
+    existing.turnId = event.turnId;
+    changed = true;
+  }
   if (event.model && !existing.model) {
     existing.model = event.model;
     changed = true;
@@ -72,6 +88,10 @@ function enrichDuplicateProvenance(session, event) {
   }
   if (event.serviceTier && !existing.serviceTier) {
     existing.serviceTier = event.serviceTier;
+    changed = true;
+  }
+  if (event.phase && !existing.phase) {
+    existing.phase = event.phase;
     changed = true;
   }
   if (event.model && !session.model) {
@@ -121,6 +141,7 @@ function publicEvent(event) {
   if (event.model) copy.model = event.model;
   if (event.reasoningEffort) copy.reasoningEffort = event.reasoningEffort;
   if (event.serviceTier) copy.serviceTier = event.serviceTier;
+  if (event.phase) copy.phase = event.phase;
   if (event.source === "hook" || event.source === "rollout") copy.origin = event.source;
   if (event.tool?.name) copy.tool = { name: event.tool.name };
   if (event.message?.text) {
@@ -156,6 +177,7 @@ function newSession(event) {
     threadSource: event.threadSource || null,
     agentRole: event.agentRole || null,
     permissionMode: event.permissionMode || null,
+    approvalPolicy: event.approvalPolicy || null,
     machineName: event.machineName || null,
     startedAt: event.at,
     updatedAt: event.at,
@@ -169,6 +191,9 @@ function newSession(event) {
       canSteer: false,
       canSend: false,
       canInterrupt: false,
+      canHandoff: false,
+      canReclaim: false,
+      handedOff: false,
       canApprove: false,
       canAnswer: false,
       live: false,
@@ -239,6 +264,7 @@ function applyEvent(session, event) {
   if (!staleState) session.turnId = event.turnId || session.turnId;
   session.transcriptPath = event.transcriptPath || session.transcriptPath;
   session.permissionMode = event.permissionMode || session.permissionMode;
+  session.approvalPolicy = event.approvalPolicy || session.approvalPolicy;
   if (event.parentThreadId) session.parentThreadId = event.parentThreadId;
   if (event.threadSource) session.threadSource = event.threadSource;
   if (event.agentRole) session.agentRole = event.agentRole;
@@ -361,7 +387,7 @@ function applyEvent(session, event) {
       session.control.expectedTurnId = null;
       if (session.control.canApprove) {
           session.control.mode = "approve";
-          session.control.reason = "A single-use PermissionRequest hook challenge is attached";
+          session.control.reason = "A single-use Codex approval challenge is attached";
       } else if (session.control.canAnswer) {
         session.control.mode = "answer";
         session.control.live = true;
@@ -568,6 +594,9 @@ export class SessionStore extends EventEmitter {
         canSteer: false,
         canSend: false,
         canInterrupt: false,
+        canHandoff: false,
+        canReclaim: false,
+        handedOff: false,
         canApprove: false,
         canAnswer: false,
         live: false,
@@ -608,7 +637,14 @@ export class SessionStore extends EventEmitter {
     // Codex rollouts commonly contain the same visible message in both an
     // event_msg and a response_item record. Keep one canonical timeline row so
     // history, storage, and mobile rendering do not grow at roughly 2x speed.
-    if (isSemanticMessageDuplicate(session.events, normalized)) return session;
+    const semanticDuplicate = findSemanticMessageDuplicate(session.events, normalized);
+    if (semanticDuplicate) {
+      // Keep the first, richer response_item formatting while inheriting the
+      // task_complete turn identity used to group the restored conversation.
+      if (!semanticDuplicate.turnId && normalized.turnId) semanticDuplicate.turnId = normalized.turnId;
+      if (!semanticDuplicate.phase && normalized.phase) semanticDuplicate.phase = normalized.phase;
+      return session;
+    }
     applyEvent(session, normalized);
     if (normalized.kind !== "session_metadata") {
       session.events.push({
@@ -620,6 +656,7 @@ export class SessionStore extends EventEmitter {
         model: normalized.model || null,
         reasoningEffort: normalized.reasoningEffort || null,
         serviceTier: normalized.serviceTier || null,
+        phase: normalized.phase || null,
         label: eventLabel(normalized),
         tool: normalized.tool || null,
         message: normalized.message || null,
@@ -775,9 +812,15 @@ export class SessionStore extends EventEmitter {
       ? { ...session, events: selectedEvents }
       : Object.fromEntries(Object.entries(session).filter(([key]) => key !== "events"));
     const copy = JSON.parse(JSON.stringify(source));
-    const ageMs = Math.max(0, Date.now() - Date.parse(copy.updatedAt));
+    const updatedAtMs = Date.parse(copy.updatedAt);
+    const ageMs = Math.max(0, Date.now() - updatedAtMs);
     const ended = ["idle", "completed", "error", "aborted"].includes(copy.status);
-    copy.liveness = ended ? "historical" : ageMs <= this.staleAfterMs ? "recent" : "unverified";
+    copy.liveness = ended
+      ? "historical"
+      : (copy.control?.live || ageMs <= this.staleAfterMs) ? "recent" : "unverified";
+    copy.staleAt = ended || !Number.isFinite(updatedAtMs)
+      ? null
+      : new Date(updatedAtMs + this.staleAfterMs).toISOString();
     copy.lastSeenAt = copy.updatedAt;
     copy.machineName = copy.machineName || this.machineName;
     copy.taskKind = sessionTaskKind(session);
@@ -858,17 +901,25 @@ export class SessionStore extends EventEmitter {
     subscribedThreadSet = null,
     threadStates = {},
     unavailableThreadReasons = {},
+    handedOffThreads = [],
+    handedOffThreadSet = null,
+    handoffSupported = false,
   } = {}, announce = true) {
     const loaded = loadedThreadSet || new Set(loadedThreads);
     const subscribed = subscribedThreadSet || new Set(subscribedThreads);
     const live = Boolean(connected && loaded.has(session.id) && subscribed.has(session.id));
     const runtime = threadStates?.[session.id] || null;
     const unavailableReason = clampText(unavailableThreadReasons?.[session.id], 300) || null;
+    const handedOff = (handedOffThreadSet || new Set(handedOffThreads)).has(session.id);
+    const desktopOwnershipTransfer = session.surface === "Desktop";
     const previous = JSON.stringify(session.control);
     session.control.live = live;
     session.control.canSend = false;
     session.control.canSteer = false;
     session.control.canInterrupt = false;
+    session.control.canHandoff = false;
+    session.control.canReclaim = false;
+    session.control.handedOff = handedOff;
     session.control.action = null;
     session.control.expectedTurnId = null;
     if (sessionTaskKind(session) !== "user" && !session.control.canApprove && !session.control.canAnswer) {
@@ -883,6 +934,13 @@ export class SessionStore extends EventEmitter {
       const interruptRequested = runtime?.activeFlags?.includes("interruptRequested");
       if (unavailableReason) {
         session.control.mode = "observe";
+        session.control.canReclaim = Boolean(
+          handedOff
+          && connected
+          && handoffSupported
+          && desktopOwnershipTransfer
+          && !["working", "waiting"].includes(session.status)
+        );
         session.control.reason = `Live control unavailable: ${unavailableReason}`;
       } else if (live && runtime?.status === "active" && runtime.activeTurnId && !waiting && !interruptRequested) {
         session.control.mode = "steer";
@@ -895,6 +953,7 @@ export class SessionStore extends EventEmitter {
       } else if (live && runtime?.status === "idle") {
         session.control.mode = "start";
         session.control.canSend = true;
+        session.control.canHandoff = Boolean(handoffSupported && desktopOwnershipTransfer);
         session.control.action = "start";
         session.control.reason = "This verified Codex thread is idle and can start a new turn";
       } else if (!live && connected && session.transcriptPath && SAFELY_RESUMABLE_STATUSES.has(session.status)) {
@@ -929,6 +988,8 @@ export class SessionStore extends EventEmitter {
       unavailableThreadReasons: state.unavailableThreadReasons && typeof state.unavailableThreadReasons === "object"
         ? JSON.parse(JSON.stringify(state.unavailableThreadReasons))
         : {},
+      handedOffThreads: Array.isArray(state.handedOffThreads) ? [...state.handedOffThreads] : [],
+      handoffSupported: Boolean(state.handoffSupported),
     };
     const signature = JSON.stringify(next);
     if (signature === this.bridgeStateSignature) return;
@@ -937,6 +998,7 @@ export class SessionStore extends EventEmitter {
       ...next,
       loadedThreadSet: new Set(next.loadedThreads),
       subscribedThreadSet: new Set(next.subscribedThreads),
+      handedOffThreadSet: new Set(next.handedOffThreads),
     };
     for (const session of this.sessions.values()) {
       this.applyBridgeStateToSession(session, this.bridgeState);

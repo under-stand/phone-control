@@ -152,6 +152,7 @@ export const tests = [
         turnId: "turn-old",
         kind: "user_prompt",
         at: "2026-08-23T11:59:59Z",
+        surface: "Desktop",
         message: { role: "user", text: "Continue this task" },
       });
       store.ingest({
@@ -167,11 +168,13 @@ export const tests = [
 
       store.setBridgeState({
         connected: true,
+        handoffSupported: true,
         loadedThreads: ["thread-control"],
         subscribedThreads: ["thread-control"],
         threadStates: { "thread-control": { status: "idle", activeFlags: [], activeTurnId: null } },
       });
       assert.equal(store.get("thread-control").control.action, "start");
+      assert.equal(store.get("thread-control").control.canHandoff, true);
 
       store.setBridgeState({
         connected: true,
@@ -182,6 +185,7 @@ export const tests = [
       assert.equal(store.get("thread-control").control.action, "steer");
       assert.equal(store.get("thread-control").control.expectedTurnId, "turn-active");
       assert.equal(store.get("thread-control").control.canInterrupt, true);
+      assert.equal(store.get("thread-control").control.canHandoff, false);
 
       store.setBridgeState({
         connected: true,
@@ -212,6 +216,48 @@ export const tests = [
       assert.equal(store.get("thread-control").control.canSend, false);
       assert.equal(store.get("thread-control").control.mode, "observe");
       assert.match(store.get("thread-control").control.reason, /Live control unavailable/);
+
+      store.setBridgeState({
+        connected: true,
+        handoffSupported: true,
+        handedOffThreads: ["thread-control"],
+        unavailableThreadReasons: {
+          "thread-control": "This session was handed off to the desktop and is phone read-only",
+        },
+      });
+      assert.equal(store.get("thread-control").control.handedOff, true);
+      assert.equal(store.get("thread-control").control.canSend, false);
+      assert.equal(store.get("thread-control").control.canHandoff, false);
+      assert.equal(store.get("thread-control").control.canReclaim, true);
+
+      const cliStore = new SessionStore();
+      cliStore.ingest({
+        eventId: "cli-user",
+        sessionId: "thread-cli",
+        turnId: "turn-cli",
+        kind: "user_prompt",
+        at: "2026-08-23T12:00:00Z",
+        surface: "CLI",
+        message: { role: "user", text: "Continue from the terminal" },
+      });
+      cliStore.ingest({
+        eventId: "cli-complete",
+        sessionId: "thread-cli",
+        turnId: "turn-cli",
+        kind: "turn_complete",
+        at: "2026-08-23T12:00:01Z",
+        transcriptPath: "/tmp/thread-cli.jsonl",
+      });
+      cliStore.setBridgeState({
+        connected: true,
+        handoffSupported: true,
+        loadedThreads: ["thread-cli"],
+        subscribedThreads: ["thread-cli"],
+        threadStates: { "thread-cli": { status: "idle", activeFlags: [], activeTurnId: null } },
+      });
+      assert.equal(cliStore.get("thread-cli").control.canSend, true);
+      assert.equal(cliStore.get("thread-cli").control.canHandoff, false);
+      assert.equal(cliStore.get("thread-cli").control.canReclaim, false);
     },
   },
   {
@@ -251,6 +297,7 @@ export const tests = [
       assert.equal(store.get("thread-working").control.canSend, false);
       assert.equal(store.get("thread-working").control.mode, "observe");
       assert.match(store.get("thread-working").control.reason, /another Codex runtime/);
+      assert.equal(store.get("thread-working").staleAt, "2026-08-24T12:10:00.000Z");
       assert.equal(store.get("thread-waiting").control.canSend, false);
       assert.notEqual(store.get("thread-waiting").control.action, "resume");
     },
@@ -296,9 +343,36 @@ export const tests = [
       assert.equal(tool.serviceTier, "priority");
       assert.deepEqual(done.map((event) => event.kind), ["assistant_message", "turn_complete"]);
       assert.equal(done[0].message.text, formattedReply);
+      assert.equal(done[0].phase, "final_answer");
       assert.equal(done[0].model, "gpt-5.6-sol");
       assert.equal(done[0].reasoningEffort, "xhigh");
       assert.equal(done[0].serviceTier, "priority");
+    },
+  },
+  {
+    name: "preserves assistant commentary and final answer phases from rollout records",
+    run() {
+      const context = createRolloutContext("/tmp/rollout-message-phases.jsonl");
+      normalizeRolloutRecord({ type: "session_meta", timestamp: "2026-08-23T12:00:00Z", payload: { id: "thread-phases", source: "desktop" } }, context);
+      const commentary = normalizeRolloutRecord({
+        type: "response_item",
+        timestamp: "2026-08-23T12:00:01Z",
+        payload: {
+          type: "message",
+          role: "assistant",
+          phase: "commentary",
+          content: [{ type: "output_text", text: "Working" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-phases" },
+        },
+      }, context)[0];
+      const final = normalizeRolloutRecord({
+        type: "response_item",
+        timestamp: "2026-08-23T12:00:02Z",
+        payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Done" }] },
+      }, context)[0];
+      assert.equal(commentary.phase, "commentary");
+      assert.equal(commentary.turnId, "turn-phases");
+      assert.equal(final.phase, "final_answer");
     },
   },
   {
@@ -357,7 +431,6 @@ export const tests = [
         eventId: "legacy-turn-event",
         source: "rollout",
         sessionId: "thread-provenance",
-        turnId: "turn-provenance",
         kind: "assistant_message",
         at: "2026-08-24T12:00:00.000Z",
         message: { role: "assistant", text: "Done" },
@@ -371,6 +444,7 @@ export const tests = [
         at: "2026-08-24T12:00:00.000Z",
         model: "gpt-5.6-sol",
         reasoningEffort: "xhigh",
+        phase: "final_answer",
         message: { role: "assistant", text: "Done" },
       });
       const session = store.get("thread-provenance");
@@ -378,6 +452,8 @@ export const tests = [
       assert.equal(session.reasoningEffort, "xhigh");
       assert.equal(session.events[0].model, "gpt-5.6-sol");
       assert.equal(session.events[0].reasoningEffort, "xhigh");
+      assert.equal(session.events[0].phase, "final_answer");
+      assert.equal(session.events[0].turnId, "turn-provenance");
     },
   },
   {
@@ -452,6 +528,33 @@ export const tests = [
       const detail = store.get("thread-message-dedupe");
       assert.equal(detail.events.length, 2);
       assert.deepEqual(detail.events.map((event) => event.eventId), ["rollout-message-event", "hook-message"]);
+    },
+  },
+  {
+    name: "deduplicates a delayed task_complete reply without crossing a turn boundary",
+    run() {
+      const store = new SessionStore();
+      const first = {
+        eventId: "response-item-message",
+        source: "rollout",
+        sessionId: "thread-delayed-message-dedupe",
+        kind: "assistant_message",
+        at: "2026-08-24T12:00:00.000Z",
+        message: { role: "assistant", text: "The task is complete" },
+      };
+      store.ingest(first);
+      store.ingest({ eventId: "tool-finished", source: "rollout", sessionId: first.sessionId, kind: "tool_end", at: "2026-08-24T12:00:05.000Z" });
+      store.ingest({ ...first, eventId: "task-complete-copy", turnId: "turn-one", at: "2026-08-24T12:00:12.000Z" });
+
+      let detail = store.get(first.sessionId);
+      assert.deepEqual(detail.events.filter((event) => event.kind === "assistant_message").map((event) => event.eventId), ["response-item-message"]);
+      assert.equal(detail.events.find((event) => event.eventId === "response-item-message").turnId, "turn-one");
+
+      store.ingest({ eventId: "turn-one-done", source: "rollout", sessionId: first.sessionId, kind: "turn_complete", turnId: "turn-one", at: "2026-08-24T12:00:13.000Z" });
+      store.ingest({ eventId: "turn-two-start", source: "rollout", sessionId: first.sessionId, kind: "turn_start", turnId: "turn-two", at: "2026-08-24T12:00:14.000Z" });
+      store.ingest({ ...first, eventId: "same-text-next-turn", turnId: "turn-two", at: "2026-08-24T12:00:15.000Z" });
+      detail = store.get(first.sessionId);
+      assert.deepEqual(detail.events.filter((event) => event.kind === "assistant_message").map((event) => event.eventId), ["response-item-message", "same-text-next-turn"]);
     },
   },
   {

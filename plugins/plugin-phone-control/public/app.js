@@ -6,10 +6,11 @@ import {
   projectName,
   readableBytes,
   relativeTime,
+  sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=55";
-import { conversationTurns } from "./lib/conversation.js?v=55";
+} from "./lib/format.js?v=63";
+import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=63";
 
 function storedCompletionKeys() {
   try {
@@ -145,6 +146,8 @@ const elements = {
   newSessionFast: document.querySelector("#new-session-fast"),
   newSessionFastRow: document.querySelector("#new-session-fast-row"),
   newSessionFastHint: document.querySelector("#new-session-fast-hint"),
+  newSessionPermission: document.querySelector("#new-session-permission"),
+  newSessionPermissionHint: document.querySelector("#new-session-permission-hint"),
   newSessionConfigReset: document.querySelector("#new-session-config-reset"),
   newSessionModelHint: document.querySelector("#new-session-model-hint"),
   newSessionRuntime: document.querySelector("#new-session-runtime"),
@@ -167,6 +170,8 @@ const elements = {
   statusClose: document.querySelector("#status-close"),
   statusRefresh: document.querySelector("#status-refresh"),
   statusContent: document.querySelector("#status-content"),
+  topMenu: document.querySelector("#top-menu"),
+  topMenuTrigger: document.querySelector("#top-menu-trigger"),
   devicesButton: document.querySelector("#devices-button"),
   devicesDialog: document.querySelector("#devices-dialog"),
   devicesClose: document.querySelector("#devices-close"),
@@ -197,6 +202,7 @@ const labels = {
   completed: "已结束",
   error: "出错",
   aborted: "已中止",
+  disconnected: "连接已中断",
   unknown: "状态未知",
 };
 
@@ -235,6 +241,7 @@ function taskTopic(session) {
 }
 
 function taskSummary(session) {
+  if (sessionDisplayStatus(session) === "disconnected") return "上次执行未收到结束状态，当前不再视为工作中";
   if (session.task?.progress) return session.task.progress;
   if (session.status === "waiting") {
     const action = session.pendingApproval?.kind === "question" ? "需要你回答" : "需要你处理";
@@ -270,7 +277,7 @@ function localTaskSearchMatches(session) {
     session.machineName,
     session.surface,
     session.model,
-    labels[session.status] || session.status,
+    labels[sessionDisplayStatus(session)] || session.status,
   ].filter(Boolean).join(" ")).toLocaleLowerCase("zh-CN");
   return normalizedSearchTokens().every((token) => haystack.includes(token));
 }
@@ -299,6 +306,7 @@ function highlightedSearchText(value) {
 }
 
 function targetProgress(session) {
+  if (sessionDisplayStatus(session) === "disconnected") return "上次执行连接已中断";
   if (session.task?.progress) return taskPreview(session.task.progress, 42);
   if (session.status === "waiting") {
     const action = session.pendingApproval?.kind === "question" ? "需要你回答" : "需要你处理";
@@ -345,12 +353,13 @@ function renderTargetTracker() {
     elements.targetOpen.disabled = true;
     return;
   }
-  elements.targetTracker.dataset.status = session.status || "unknown";
+  const displayStatus = sessionDisplayStatus(session);
+  elements.targetTracker.dataset.status = displayStatus;
   elements.targetTracker.classList.toggle("is-compact", filterMatches(session));
   elements.targetContext.textContent = `目标会话 · ${projectName(session)}`;
   elements.targetTitle.textContent = taskTitle(session);
   elements.targetProgress.textContent = `${targetProgress(session)} · ${relativeTime(session.updatedAt)}更新`;
-  elements.targetState.textContent = labels[session.status] || labels.unknown;
+  elements.targetState.textContent = labels[displayStatus] || labels.unknown;
   elements.targetOpen.disabled = false;
 }
 
@@ -411,6 +420,7 @@ function filterMatches(session) {
 }
 
 function taskCard(session) {
+  const displayStatus = sessionDisplayStatus(session);
   const goal = taskGoal(session);
   const topic = taskTopic(session);
   const progress = taskSummary(session);
@@ -420,11 +430,13 @@ function taskCard(session) {
   const waiting = session.pendingApproval
     ? `<div class="attention"><span>!</span><div><b>${session.pendingApproval.kind === "question" ? "需要回答" : "需要审批"}</b><small>${escapeHtml(session.pendingApproval.reason)}</small></div></div>`
     : "";
-  const liveness = session.liveness === "unverified"
+  const liveness = displayStatus === "disconnected"
+    ? `<div class="liveness-note">未收到完成或失败事件 · 最后活动于 ${relativeTime(session.lastSeenAt)}</div>`
+    : session.liveness === "unverified"
     ? `<div class="liveness-note">现场状态未验证 · 最后活动于 ${relativeTime(session.lastSeenAt)}</div>`
     : "";
   return `
-    <article class="task-card" data-session-id="${escapeHtml(session.id)}" data-status="${escapeHtml(session.status)}"${match?.eventId ? ` data-search-event-id="${escapeHtml(match.eventId)}"` : ""} tabindex="0">
+    <article class="task-card" data-session-id="${escapeHtml(session.id)}" data-status="${escapeHtml(displayStatus)}"${match?.eventId ? ` data-search-event-id="${escapeHtml(match.eventId)}"` : ""} tabindex="0">
       <div class="task-accent"></div>
       <header>
         <div class="task-source"><span>${session.surface === "Desktop" ? "▣" : session.surface === "CLI" ? ">_" : "◇"}</span>${escapeHtml(session.surface)}</div>
@@ -432,11 +444,11 @@ function taskCard(session) {
       </header>
       <div class="task-title-row">
         <div><h3>${highlightedSearchText(taskTitle(session))}</h3><p>${escapeHtml(projectName(session))}${escapeHtml(machine)}</p></div>
-        <span class="status-badge">${labels[session.status] || labels.unknown}</span>
+        <span class="status-badge">${labels[displayStatus] || labels.unknown}</span>
       </div>
       ${topic ? `<p class="task-topic"><span title="长期会话主题">主题</span><b>${highlightedSearchText(topic)}</b></p>` : ""}
       ${showGoal ? `<p class="task-message">${highlightedSearchText(goal)}</p>` : ""}
-      <p class="task-progress-line"><span>${isAttentionTask(session) ? "待你" : ["idle", "completed"].includes(session.status) ? "结果" : "进展"}</span><b>${highlightedSearchText(progress)}</b></p>
+      <p class="task-progress-line"><span>${displayStatus === "disconnected" ? "状态" : isAttentionTask(session) ? "待你" : ["idle", "completed"].includes(session.status) ? "结果" : "进展"}</span><b>${highlightedSearchText(progress)}</b></p>
       ${match?.snippet ? `<p class="task-match"><span>匹配</span><b>${highlightedSearchText(match.snippet)}</b></p>` : ""}
       ${waiting}${liveness}
       <footer>
@@ -615,11 +627,20 @@ function persistDraftsSoon() {
 }
 
 function updateConnection(value, label) {
+  const compactLabels = {
+    online: "已连接",
+    synced: "已同步",
+    connecting: "连接中",
+    paused: "后台暂停",
+    offline: "已断开",
+  };
+  const compactLabel = compactLabels[value] || label;
   elements.connection.dataset.state = value;
-  elements.connection.querySelector("b").textContent = label;
+  elements.connection.querySelector("b").textContent = compactLabel;
   const online = value === "online";
-  elements.connection.setAttribute("aria-label", online ? "实时连接正常；点按立即检查机器" : `${label}；点按立即连接机器`);
-  elements.connection.title = online ? "实时连接正常；点按立即检查" : "点按立即重试连接";
+  const context = label && label !== compactLabel ? `；${label}` : "";
+  elements.connection.setAttribute("aria-label", online ? "实时连接正常；点按立即检查机器" : `${compactLabel}${context}；点按立即连接机器`);
+  elements.connection.title = online ? "实时连接正常；点按立即检查" : `${compactLabel}；点按立即重试连接`;
   updateSyncSummary();
 }
 
@@ -840,6 +861,24 @@ function modelOptions(selected = "", inheritLabel = "沿用当前设置") {
   return options.join("");
 }
 
+const permissionProfiles = Object.freeze({
+  "read-only": { label: "只读", hint: "不允许写文件，也不会为写入操作弹出审批。" },
+  "workspace-write": { label: "工作区内自动执行", hint: "可修改当前项目；工作区外与网络访问会被沙箱阻止。" },
+  "on-request": { label: "超出工作区时询问", hint: "项目内可正常工作；额外命令或文件权限会发送到手机审批。" },
+  "danger-full-access": { label: "完全访问电脑", hint: "关闭沙箱并自动执行。风险很高，发送前需要再次确认。" },
+});
+
+function permissionProfileLabel(value, fallback = "沿用当前权限") {
+  return permissionProfiles[value]?.label || fallback;
+}
+
+function permissionOptions(selected = "", inheritLabel = "沿用当前权限") {
+  return [
+    `<option value=""${selected ? "" : " selected"}>${escapeHtml(inheritLabel)}</option>`,
+    ...Object.entries(permissionProfiles).map(([value, profile]) => `<option value="${escapeHtml(value)}"${selected === value ? " selected" : ""}>${escapeHtml(profile.label)}</option>`),
+  ].join("");
+}
+
 function populateNewSessionModels() {
   const selected = elements.newSessionModel.value;
   elements.newSessionModel.innerHTML = modelOptions(selected, `跟随 Codex 默认 · ${defaultModelSummary()}`);
@@ -860,13 +899,16 @@ function populateNewSessionModels() {
   elements.newSessionFast.disabled = !tier;
   elements.newSessionFastRow.classList.toggle("is-disabled", !tier);
   elements.newSessionFastHint.textContent = tier?.description || (tier ? "使用更高服务优先级" : "当前模型或账号未提供 Fast");
+  const permissionProfile = elements.newSessionPermission.value;
+  elements.newSessionPermissionHint.textContent = permissionProfiles[permissionProfile]?.hint || "未覆盖本机的审批与沙箱设置。";
   elements.newSessionModelHint.textContent = state.modelCatalog?.available
-    ? `不调整时使用 ${defaultModelSummary()}；这些设置会延续到后续轮次，权限和沙箱仍沿用本机配置。`
-    : "模型目录暂不可用；新会话仍会沿用本机 Codex 默认模型、权限和沙箱。";
+    ? `不调整时使用 ${defaultModelSummary()}；所选运行配置会延续到后续轮次。`
+    : "模型目录暂不可用；仍可单独选择这个会话的权限。";
   const runtimeSummary = [
     elements.newSessionModel.value || state.modelCatalog?.configuration?.model || "本机默认",
     selectedEffort ? modelEffortLabel(selectedEffort) : null,
     elements.newSessionFast.checked && tier ? "Fast" : null,
+    permissionProfile ? permissionProfileLabel(permissionProfile) : null,
   ].filter(Boolean).join(" · ");
   elements.newSessionRuntimeSummary.textContent = runtimeSummary;
   renderNewSessionWorkspaces();
@@ -876,7 +918,7 @@ function populateComposerModels() {
   for (const form of elements.detailActions.querySelectorAll("form[data-session-command]")) {
     const sessionId = form.dataset.sessionCommand;
     const session = state.detailSessions.get(sessionId) || state.sessions.get(sessionId);
-    const selection = state.composerModelSelections.get(sessionId) || { model: "", reasoningEffort: "", serviceTier: "", cwd: "" };
+    const selection = state.composerModelSelections.get(sessionId) || { model: "", reasoningEffort: "", serviceTier: "", cwd: "", permissionProfile: "" };
     const current = [session?.model || "当前模型", session?.reasoningEffort ? `推理 ${modelEffortLabel(session.reasoningEffort)}` : null].filter(Boolean).join(" · ");
     const modelSelect = form.querySelector("[data-model-select]");
     if (!modelSelect) {
@@ -910,10 +952,10 @@ function updateComposerSettingsSummary(form, session, selection) {
   const summary = form?.querySelector("[data-runtime-summary]");
   if (!summary || !session) return;
   const effectiveTier = selection.serviceTier || session.serviceTier || state.modelCatalog?.configuration?.serviceTier || "default";
-  const hasOverrides = Boolean(selection.model || selection.reasoningEffort || selection.serviceTier || selection.cwd);
+  const hasOverrides = Boolean(selection.model || selection.reasoningEffort || selection.serviceTier || selection.cwd || selection.permissionProfile);
   const value = hasOverrides
-    ? [selection.model || `沿用 ${session.model || "当前模型"}`, selection.reasoningEffort ? `推理 ${modelEffortLabel(selection.reasoningEffort)}` : null, isFastServiceTier(effectiveTier) ? "Fast" : null].filter(Boolean).join(" · ")
-    : [session.model || "当前模型", session.reasoningEffort ? `推理 ${modelEffortLabel(session.reasoningEffort)}` : null, isFastServiceTier(session.serviceTier) ? "Fast" : null].filter(Boolean).join(" · ");
+    ? [selection.model || `沿用 ${session.model || "当前模型"}`, selection.reasoningEffort ? `推理 ${modelEffortLabel(selection.reasoningEffort)}` : null, isFastServiceTier(effectiveTier) ? "Fast" : null, selection.permissionProfile ? permissionProfileLabel(selection.permissionProfile) : null].filter(Boolean).join(" · ")
+    : [session.model || "当前模型", session.reasoningEffort ? `推理 ${modelEffortLabel(session.reasoningEffort)}` : null, isFastServiceTier(session.serviceTier) ? "Fast" : null, permissionSummary(session, state.modelCatalog?.configuration)].filter(Boolean).join(" · ");
   summary.textContent = value;
 }
 
@@ -968,6 +1010,7 @@ function forgetSession(id) {
   state.drafts.delete(id);
   persistDraftsSoon();
   clearAttachments(id);
+  hideSignal(id);
   if (state.targetSessionId === id) applyTargetSession(null);
   if (elements.detail.dataset.sessionId === id) {
     elements.detail.dataset.sessionId = "";
@@ -1027,7 +1070,17 @@ function playSignalSound(kind = "complete") {
   });
 }
 
+function hideSignal(sessionId = null) {
+  if (sessionId && elements.signalToast.dataset.sessionId !== sessionId) return;
+  clearTimeout(showSignal.timer);
+  showSignal.timer = null;
+  if (elements.signalToast.matches?.(":popover-open")) elements.signalToast.hidePopover();
+  elements.signalToast.classList.remove("fallback-open");
+  delete elements.signalToast.dataset.sessionId;
+}
+
 function showSignal(session) {
+  hideSignal();
   elements.signalToast.dataset.sessionId = session.id;
   elements.signalToast.querySelector(".signal-toast-mark").textContent = "✓";
   elements.signalToastTitle.textContent = "Codex 本轮已完成";
@@ -1038,11 +1091,7 @@ function showSignal(session) {
   } else {
     elements.signalToast.classList.add("fallback-open");
   }
-  clearTimeout(showSignal.timer);
-  showSignal.timer = setTimeout(() => {
-    if (elements.signalToast.matches?.(":popover-open")) elements.signalToast.hidePopover();
-    else elements.signalToast.classList.remove("fallback-open");
-  }, 6_000);
+  showSignal.timer = setTimeout(() => hideSignal(session.id), 6_000);
   playSignalSound("complete");
 }
 
@@ -1743,8 +1792,7 @@ function turnProcess(turn, sessionId) {
 
 function conversationTurn(turn, { sessionId, label = "对话轮次", older = false, current = false } = {}) {
   const status = conversationTurnStatus(turn);
-  const finalReply = turn.assistantMessages.at(-1);
-  const updates = turn.assistantMessages.slice(0, -1);
+  const { finalReply, updates } = assistantReplyGroups(turn);
   const model = turn.model || null;
   const effort = turn.reasoningEffort || null;
   const modelMeta = [model, effort ? `推理 ${modelEffortLabel(effort)}` : null, isFastServiceTier(turn.serviceTier) ? "Fast" : null].filter(Boolean).join(" · ");
@@ -1843,12 +1891,13 @@ function rerenderCachedDetail(sessionId, { scrollTop = elements.detailContent.sc
 function approvalPanel(session) {
   if (session.pendingApproval?.kind !== "permission" || !session.pendingApproval.canRespond) return "";
   return `
-    <section class="approval-panel" data-approval-id="${escapeHtml(session.pendingApproval.id)}">
+    <section class="approval-panel" data-approval-id="${escapeHtml(session.pendingApproval.id)}" data-session-id="${escapeHtml(session.id)}" data-turn-id="${escapeHtml(session.pendingApproval.turnId || session.turnId || "")}">
       <p class="eyebrow">ONE-TIME DECISION</p>
       <h3>Codex 正在等待你的决定</h3>
       <p>${escapeHtml(session.pendingApproval.reason)}</p>
       ${session.pendingApproval.details?.command ? `<pre>${escapeHtml(session.pendingApproval.details.command)}</pre>` : ""}
       ${session.pendingApproval.details?.path ? `<code>${escapeHtml(session.pendingApproval.details.path)}</code>` : ""}
+      ${session.pendingApproval.details?.permissionRequest ? `<pre>${escapeHtml(session.pendingApproval.details.permissionRequest)}</pre>` : ""}
       <small>仅绑定本次请求，到期时间 ${escapeHtml(new Date(session.pendingApproval.expiresAt).toLocaleTimeString())}</small>
       <div class="approval-actions">
         <button class="deny" type="button" data-decision="deny">拒绝</button>
@@ -1898,24 +1947,24 @@ function questionPanel(session) {
 
 function composerModelSettings(session, action) {
   if (action === "steer") return "";
-  const selection = state.composerModelSelections.get(session.id) || { model: "", reasoningEffort: "", serviceTier: "", cwd: "" };
-  const current = [session.model || "当前模型", session.reasoningEffort ? `推理 ${modelEffortLabel(session.reasoningEffort)}` : null, isFastServiceTier(session.serviceTier) ? "Fast" : null].filter(Boolean).join(" · ");
+  const selection = state.composerModelSelections.get(session.id) || { model: "", reasoningEffort: "", serviceTier: "", cwd: "", permissionProfile: "" };
+  const current = [session.model || "当前模型", session.reasoningEffort ? `推理 ${modelEffortLabel(session.reasoningEffort)}` : null, isFastServiceTier(session.serviceTier) ? "Fast" : null, permissionSummary(session, state.modelCatalog?.configuration)].filter(Boolean).join(" · ");
   const effectiveTier = selection.serviceTier || session.serviceTier || state.modelCatalog?.configuration?.serviceTier || "default";
-  const hasOverrides = Boolean(selection.model || selection.reasoningEffort || selection.serviceTier || selection.cwd);
-  const summary = [selection.model || `沿用 ${session.model || "当前模型"}`, selection.reasoningEffort ? `推理 ${modelEffortLabel(selection.reasoningEffort)}` : null, isFastServiceTier(effectiveTier) ? "Fast" : null].filter(Boolean).join(" · ");
-  return `<button class="turn-model-settings" type="button" data-open-runtime-settings="${escapeHtml(session.id)}" aria-haspopup="dialog" aria-controls="runtime-settings-dialog" aria-label="设置后续轮次的模型与推理强度"><img src="/icons/sliders-horizontal.svg" alt=""><b data-runtime-summary>${escapeHtml(hasOverrides ? summary : current)}</b></button>`;
+  const hasOverrides = Boolean(selection.model || selection.reasoningEffort || selection.serviceTier || selection.cwd || selection.permissionProfile);
+  const summary = [selection.model || `沿用 ${session.model || "当前模型"}`, selection.reasoningEffort ? `推理 ${modelEffortLabel(selection.reasoningEffort)}` : null, isFastServiceTier(effectiveTier) ? "Fast" : null, selection.permissionProfile ? permissionProfileLabel(selection.permissionProfile) : null].filter(Boolean).join(" · ");
+  return `<button class="turn-model-settings" type="button" data-open-runtime-settings="${escapeHtml(session.id)}" aria-haspopup="dialog" aria-controls="runtime-settings-dialog" aria-label="设置后续轮次的模型、推理与权限"><img src="/icons/sliders-horizontal.svg" alt=""><b data-runtime-summary>${escapeHtml(hasOverrides ? summary : current)}</b></button>`;
 }
 
 function runtimeSettingsMarkup(session) {
-  const selection = state.composerModelSelections.get(session.id) || { model: "", reasoningEffort: "", serviceTier: "", cwd: "" };
+  const selection = state.composerModelSelections.get(session.id) || { model: "", reasoningEffort: "", serviceTier: "", cwd: "", permissionProfile: "" };
   const modelId = effectiveModelId(selection.model, session);
   const model = modelById(modelId);
   const current = [session.model || "当前模型", session.reasoningEffort ? `推理 ${modelEffortLabel(session.reasoningEffort)}` : null, isFastServiceTier(session.serviceTier) ? "Fast" : null].filter(Boolean).join(" · ");
   const tier = fastTier(model);
   const effectiveTier = selection.serviceTier || session.serviceTier || state.modelCatalog?.configuration?.serviceTier || model?.defaultServiceTier || "default";
-  const hasOverrides = Boolean(selection.model || selection.reasoningEffort || selection.serviceTier || selection.cwd);
+  const hasOverrides = Boolean(selection.model || selection.reasoningEffort || selection.serviceTier || selection.cwd || selection.permissionProfile);
   return `<header>
-      <div><small>后续轮次</small><h3 id="runtime-settings-title">模型与推理</h3></div>
+      <div><small>后续轮次</small><h3 id="runtime-settings-title">模型、推理与权限</h3></div>
       <button type="button" data-close-runtime aria-label="关闭运行配置"><img src="/icons/x.svg" alt=""></button>
     </header>
     <div class="composer-runtime-card">
@@ -1930,6 +1979,10 @@ function runtimeSettingsMarkup(session) {
       <label class="fast-switch compact${tier ? "" : " is-disabled"}">
         <span><b>Fast</b><small>${escapeHtml(tier?.description || "当前模型或账号未提供 Fast")}</small></span>
         <input data-fast-toggle type="checkbox"${isFastServiceTier(effectiveTier) && tier ? " checked" : ""}${tier ? "" : " disabled"}><i aria-hidden="true"></i>
+      </label>
+      <label class="model-choice permission-choice">权限
+        <span class="select-shell"><select data-permission-select>${permissionOptions(selection.permissionProfile, `沿用 ${permissionSummary(session, state.modelCatalog?.configuration)}`)}</select><img src="/icons/caret-down.svg" alt=""></span>
+        <small>${escapeHtml(permissionProfiles[selection.permissionProfile]?.hint || "不覆盖时继续使用这个会话当前的审批与沙箱设置。")}</small>
       </label>
       ${hasOverrides ? `<button class="runtime-reset" type="button" data-reset-runtime>恢复当前会话设置</button>` : ""}
     </div>
@@ -2036,6 +2089,8 @@ function attachmentMarkup(attachments = []) {
 }
 
 function controlChannelLabel(session) {
+  if (sessionDisplayStatus(session) === "disconnected") return "连接已中断 · 只读";
+  if (session.control?.handedOff) return "已移交电脑 · 手机只读";
   if (session.control?.canAnswer) return "现场回答";
   if (session.control?.canApprove) return "单次审批";
   if (session.control?.action === "steer") return "可追加指令";
@@ -2049,6 +2104,10 @@ function controlChannelLabel(session) {
 
 function controlExplanation(session) {
   if (!isUserTask(session)) return "这是内部、测试或诊断记录，只用于排查，不允许从手机继续执行。";
+  if (sessionDisplayStatus(session) === "disconnected") return "上次执行没有收到完成或失败事件，Phone Control 已停止把它视为工作中。当前会话保持只读，避免把新指令发送到无法验证的旧 turn。";
+  if (session.control?.handedOff) return session.control?.canReclaim
+    ? "电脑端结束当前任务并完全关闭这个会话后，可点“手机接管”。Phone Control 会先确认会话已空闲，再恢复手机输入。"
+    : "Phone Control 已释放这个桌面应用会话的写入占用；历史仍会同步，手机保持只读，不会自动抢回控制权。";
   if (session.control?.canAnswer) return "这个问题已绑定到当前 Codex turn，回答后 Codex 会继续。";
   if (session.control?.canApprove) return "审批只对页面显示的这一次操作有效，过期后自动失效。";
   if (session.control?.action === "steer") return "手机指令会追加到当前正在执行的 turn；发送前会再次校验。";
@@ -2100,6 +2159,7 @@ function syncDetailContent({ control, conversationMarkup, retention, technical }
 }
 
 function renderDetails(session, { loading = false } = {}) {
+  const displayStatus = sessionDisplayStatus(session);
   const approval = approvalPanel(session);
   const question = questionPanel(session);
   const composer = composerPanel(session);
@@ -2108,6 +2168,7 @@ function renderDetails(session, { loading = false } = {}) {
   const controlIsImportant = Boolean(
     session.control?.canAnswer
     || session.control?.canApprove
+    || session.control?.handedOff
     || session.control?.reason?.startsWith("A stop request was delivered")
     || session.control?.reason?.startsWith("Live control unavailable:")
     || (!session.control?.live && session.liveness === "recent" && ["working", "waiting"].includes(session.status))
@@ -2120,10 +2181,12 @@ function renderDetails(session, { loading = false } = {}) {
       <div class="detail-title-block">
         <h2>${escapeHtml(taskTitle(session))}</h2>
         <div class="detail-context-line">
-          <span class="detail-status" data-status="${escapeHtml(session.status)}"><i aria-hidden="true"></i><b>${labels[session.status] || labels.unknown}</b></span>
+          <span class="detail-status" data-status="${escapeHtml(displayStatus)}"><i aria-hidden="true"></i><b>${labels[displayStatus] || labels.unknown}</b></span>
           <span class="detail-project-context">${escapeHtml(projectName(session))} · ${escapeHtml(session.surface)}</span>
           <span class="detail-heading-actions">
             <button class="task-title-jump" type="button" data-open-task-title>命名</button>
+            ${session.control?.canHandoff ? `<button class="session-handoff" type="button" data-handoff-session="${escapeHtml(session.id)}" title="释放 Phone Control 的会话占用，让电脑端继续">移交电脑</button>` : ""}
+            ${session.control?.canReclaim ? `<button class="session-reclaim" type="button" data-reclaim-session="${escapeHtml(session.id)}" title="确认电脑端已释放后，重新由手机控制">手机接管</button>` : ""}
             <button class="target-toggle${state.targetSessionId === session.id ? " active" : ""}" type="button" data-target-session-id="${escapeHtml(session.id)}" aria-label="${state.targetSessionId === session.id ? "取消追踪这个会话" : "追踪这个会话"}" aria-pressed="${state.targetSessionId === session.id}" title="${state.targetSessionId === session.id ? "取消目标追踪" : "固定到手机顶部并只提醒这个会话"}"><img src="/icons/crosshair-simple.svg" alt=""><b>${state.targetSessionId === session.id ? "已追踪" : "追踪"}</b></button>
           </span>
         </div>
@@ -2149,8 +2212,8 @@ function renderDetails(session, { loading = false } = {}) {
         <div><dt>Session</dt><dd><code>${escapeHtml(compactId(session.id))}</code></dd></div>
       </dl>
       <div class="session-management">
-        <div><b>永久删除 Codex 会话</b><small>${deletionBlocked ? "请先停止或等待当前任务结束" : "删除原始记录、关联元数据及其子会话，不可恢复"}</small></div>
-        <button class="session-delete" type="button" data-delete-session="${escapeHtml(session.id)}"${deletionBlocked ? " disabled" : ""}>${deletionBlocked ? "任务进行中" : "永久删除"}</button>
+        <div><b>永久删除 Codex 会话</b><small>${deletionBlocked ? displayStatus === "disconnected" ? "请先在电脑端确认旧 turn 已停止" : "请先停止或等待当前任务结束" : "删除原始记录、关联元数据及其子会话，不可恢复"}</small></div>
+        <button class="session-delete" type="button" data-delete-session="${escapeHtml(session.id)}"${deletionBlocked ? " disabled" : ""}>${deletionBlocked ? displayStatus === "disconnected" ? "状态未验证" : "任务进行中" : "永久删除"}</button>
       </div>
     </details>`,
   });
@@ -2383,12 +2446,16 @@ async function sendSessionInput(form) {
   const status = form.querySelector(".command-status");
   const text = textarea.value.trim();
   const attachments = state.attachments.get(sessionId) || [];
-  const modelSelection = state.composerModelSelections.get(sessionId) || { model: "", reasoningEffort: "", serviceTier: "", cwd: "" };
+  const modelSelection = state.composerModelSelections.get(sessionId) || { model: "", reasoningEffort: "", serviceTier: "", cwd: "", permissionProfile: "" };
   if (!text && !attachments.length) {
     status.textContent = "请输入指令或添加图片";
     textarea.focus();
     return;
   }
+  const confirmDangerFullAccess = form.dataset.controlAction !== "steer" && modelSelection.permissionProfile === "danger-full-access"
+    ? window.confirm("允许下一轮完全访问电脑？\n\n这会关闭沙箱并自动执行命令与文件修改。仅在你完全信任这条指令时继续。")
+    : false;
+  if (modelSelection.permissionProfile === "danger-full-access" && !confirmDangerFullAccess) return;
   button.disabled = true;
   textarea.disabled = true;
   for (const control of form.querySelectorAll("input, select, .attach-button")) control.disabled = true;
@@ -2409,6 +2476,8 @@ async function sendSessionInput(form) {
         model: form.dataset.controlAction === "steer" ? null : modelSelection.model || null,
         reasoningEffort: form.dataset.controlAction === "steer" ? null : modelSelection.reasoningEffort || null,
         serviceTier: form.dataset.controlAction === "steer" ? null : modelSelection.serviceTier || null,
+        permissionProfile: form.dataset.controlAction === "steer" ? null : modelSelection.permissionProfile || null,
+        confirmDangerFullAccess,
         cwd: form.dataset.controlAction === "steer" ? null : modelSelection.cwd || null,
         clientMessageId: clientMessageId(),
       }),
@@ -2476,13 +2545,13 @@ async function interruptTurn(button) {
   }
 }
 
-async function decideApproval(id, decision) {
+async function decideApproval(id, decision, sessionId = null, turnId = null) {
   if (decision === "allow" && !window.confirm("只允许当前页面显示的这一次操作？")) return;
   try {
     await request(`/api/approvals/${encodeURIComponent(id)}/decision`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ decision }),
+      body: JSON.stringify({ decision, sessionId, turnId }),
     });
     toast(decision === "allow" ? "已允许本次操作" : "已拒绝本次操作");
     await refreshSessions();
@@ -2554,15 +2623,89 @@ function usageCards(codex) {
 
 function permissionSummary(session, configuration) {
   const sandbox = session?.permissionMode || configuration?.sandboxMode;
+  const approvalPolicy = session?.approvalPolicy || configuration?.approvalPolicy;
   const reviewer = configuration?.approvalsReviewer;
   const labels = {
     "workspace-write": "工作区写入",
+    workspaceWrite: "工作区写入",
     "read-only": "只读沙箱",
+    readOnly: "只读沙箱",
     "danger-full-access": "完全访问",
+    dangerFullAccess: "完全访问",
+    "on-request": "需要时询问",
+    onRequest: "需要时询问",
+    never: "自动执行",
+    "unless-trusted": "不可信命令询问",
+    unlessTrusted: "不可信命令询问",
     auto_review: "自动审查审批",
     user: "用户审批",
   };
-  return [labels[sandbox] || sandbox, labels[reviewer] || reviewer].filter(Boolean).join(" · ") || "跟随当前 thread";
+  return [labels[sandbox] || sandbox, labels[approvalPolicy] || approvalPolicy, labels[reviewer] || reviewer].filter(Boolean).join(" · ") || "跟随当前 thread";
+}
+
+async function handoffSession(button) {
+  const sessionId = button.dataset.handoffSession;
+  if (!sessionId) return;
+  const warning = "把这个会话移交到电脑端？\n\n会话和历史都会保留，Phone Control 会释放写入占用并把手机端切成只读。由于当前空闲会话共用一个受管 App Server，其他由手机持有的空闲会话也会同时释放。\n\n请确认没有其他手机任务正在执行，然后再继续。";
+  if (!window.confirm(warning)) return;
+  button.disabled = true;
+  button.textContent = "正在移交…";
+  try {
+    const payload = await request(`/api/sessions/${encodeURIComponent(sessionId)}/handoff`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirmSharedRelease: true }),
+      timeoutMs: 15_000,
+    });
+    state.detailDirtySessions.delete(sessionId);
+    const affected = payload.operation?.affectedSessionIds?.length || 1;
+    toast(affected > 1 ? `已移交到电脑端，并释放 ${affected} 个空闲手机会话` : "已移交到电脑端；手机已切为只读");
+    await refreshSessions({ force: true });
+    if (elements.detail.open && elements.detail.dataset.sessionId === sessionId) {
+      await showDetails(sessionId, { open: false, preserveView: true });
+    }
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "移交电脑";
+    toast(error.message);
+    await refreshSessions({ force: true });
+    if (elements.detail.open && elements.detail.dataset.sessionId === sessionId) {
+      state.detailDirtySessions.delete(sessionId);
+      await showDetails(sessionId, { open: false, preserveView: true });
+    }
+  }
+}
+
+async function reclaimSession(button) {
+  const sessionId = button.dataset.reclaimSession;
+  if (!sessionId) return;
+  const warning = "重新由手机接管这个会话？\n\n请先在电脑端等待当前任务结束，并完全关闭该会话。接管成功后不要继续在电脑端打开它，否则会再次发生写入者冲突。";
+  if (!window.confirm(warning)) return;
+  button.disabled = true;
+  button.textContent = "正在接管…";
+  try {
+    await request(`/api/sessions/${encodeURIComponent(sessionId)}/reclaim`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+      timeoutMs: 15_000,
+    });
+    state.detailDirtySessions.delete(sessionId);
+    toast("手机已重新接管；可以继续输入");
+    await refreshSessions({ force: true });
+    if (elements.detail.open && elements.detail.dataset.sessionId === sessionId) {
+      await showDetails(sessionId, { open: false, preserveView: true });
+    }
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "手机接管";
+    toast(error.message);
+    await refreshSessions({ force: true });
+    if (elements.detail.open && elements.detail.dataset.sessionId === sessionId) {
+      state.detailDirtySessions.delete(sessionId);
+      await showDetails(sessionId, { open: false, preserveView: true });
+    }
+  }
 }
 
 function renderStatus(payload) {
@@ -2611,13 +2754,14 @@ function renderStatus(payload) {
         <p class="diagnostic-agent">${escapeHtml(appServer.server?.userAgent || codex.server?.userAgent || appServer.transport || "App Server 信息不可用")}</p>
         <dl class="status-grid service-grid">
           <div><dt>版本</dt><dd>v${escapeHtml(payload.version || "Unknown")}</dd></div>
+          <div><dt>服务</dt><dd>${payload.ready ? "已就绪" : "正在启动或恢复"}</dd></div>
           <div><dt>主机</dt><dd>${escapeHtml(payload.machineName || "Unknown")}</dd></div>
           <div><dt>Codex CLI</dt><dd>${escapeHtml(runtime.cliVersion || "Unknown")}</dd></div>
           <div><dt>App Server</dt><dd>${escapeHtml(runtime.appServerVersion || "Unknown")}</dd></div>
           <div><dt>Node</dt><dd>${escapeHtml(runtime.phoneControlNode?.version || "Unknown")}<small>${runtime.phoneControlNode?.supported ? "受支持运行时" : "建议升级"}</small></dd></div>
           <div><dt>会话</dt><dd>${escapeHtml(payload.sessions || 0)}<small>${payload.rolloutScanner ? "rollout 扫描开启" : "仅 Hooks"}</small></dd></div>
           <div><dt>订阅</dt><dd>${escapeHtml(appServer.subscribedThreadCount ?? appServer.subscribedThreads?.length ?? 0)} / ${escapeHtml(appServer.loadedThreadCount ?? appServer.loadedThreads?.length ?? 0)}<small>已订阅 / 已加载</small></dd></div>
-          <div><dt>手机审批</dt><dd>${payload.approvalsEnabled ? "已开启" : payload.approvalRoutingReason === "codex_auto_review" ? "由 Codex 自动审查" : "已关闭"}</dd></div>
+          <div><dt>手机审批</dt><dd>${payload.nativeApprovalsEnabled ? "权限模式可用" : payload.approvalsEnabled ? "Hook 审批已开启" : payload.approvalRoutingReason === "codex_auto_review" ? "由 Codex 自动审查" : "已关闭"}</dd></div>
           <div><dt>手机交互</dt><dd>${payload.interactionsEnabled ? "已开启" : "已关闭"}</dd></div>
           <div><dt>离线提醒</dt><dd>${state.pushSubscribed ? "已开启" : state.soundEnabled ? "仅页面声音" : "未开启"}</dd></div>
         </dl>
@@ -2664,7 +2808,7 @@ function showNewSession() {
   renderNewSessionWorkspaces(preferred);
   elements.newSessionError.textContent = "";
   populateNewSessionModels();
-  elements.newSessionRuntime.open = Boolean(elements.newSessionModel.value || elements.newSessionEffort.value || state.newSessionTierTouched);
+  elements.newSessionRuntime.open = Boolean(elements.newSessionModel.value || elements.newSessionEffort.value || state.newSessionTierTouched || elements.newSessionPermission.value);
   void loadModelCatalog().catch(() => {});
   elements.newSessionDialog.showModal();
   requestAnimationFrame(() => elements.newSessionInput.focus());
@@ -2675,6 +2819,7 @@ async function createNewSession() {
   const cwd = elements.newSessionCwd.value.trim();
   const model = elements.newSessionModel.value;
   const reasoningEffort = elements.newSessionEffort.value;
+  const permissionProfile = elements.newSessionPermission.value;
   const tier = fastTier(modelById(effectiveModelId(model)));
   const serviceTier = state.newSessionTierTouched && tier ? (elements.newSessionFast.checked ? tier.id : "default") : null;
   if (!text || !cwd) {
@@ -2682,6 +2827,10 @@ async function createNewSession() {
     (text ? elements.newSessionCwd : elements.newSessionInput).focus();
     return;
   }
+  const confirmDangerFullAccess = permissionProfile === "danger-full-access"
+    ? window.confirm("允许这个 Codex 会话完全访问电脑？\n\n这会关闭沙箱并自动执行命令与文件修改。仅在你完全信任任务内容时继续。")
+    : false;
+  if (permissionProfile === "danger-full-access" && !confirmDangerFullAccess) return;
   elements.newSessionSubmit.disabled = true;
   elements.newSessionSubmit.textContent = "正在创建…";
   elements.newSessionError.textContent = "正在连接 Codex 并创建独立会话";
@@ -2689,12 +2838,13 @@ async function createNewSession() {
     const payload = await request("/api/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text, cwd, model: model || null, reasoningEffort: reasoningEffort || null, serviceTier, clientMessageId: clientMessageId() }),
+      body: JSON.stringify({ text, cwd, model: model || null, reasoningEffort: reasoningEffort || null, serviceTier, permissionProfile: permissionProfile || null, confirmDangerFullAccess, clientMessageId: clientMessageId() }),
       timeoutMs: 15_000,
     });
     const sessionId = payload.command?.sessionId;
     elements.newSessionInput.value = "";
     state.newSessionTierTouched = false;
+    elements.newSessionPermission.value = "";
     elements.newSessionDialog.close();
     toast("新会话已创建，Codex 正在执行");
     await refreshSessions({ force: true });
@@ -3132,6 +3282,16 @@ elements.detail.addEventListener("click", (event) => {
     void deleteSession(deleteButton);
     return;
   }
+  const handoffButton = event.target.closest("[data-handoff-session]");
+  if (handoffButton) {
+    void handoffSession(handoffButton);
+    return;
+  }
+  const reclaimButton = event.target.closest("[data-reclaim-session]");
+  if (reclaimButton) {
+    void reclaimSession(reclaimButton);
+    return;
+  }
   const suggestTaskTitleButton = event.target.closest("[data-suggest-task-title]");
   if (suggestTaskTitleButton) {
     const form = suggestTaskTitleButton.closest("form[data-task-title-form]");
@@ -3276,7 +3436,7 @@ elements.detail.addEventListener("click", (event) => {
   }
   const decision = event.target.closest("button[data-decision]");
   const panel = decision?.closest("[data-approval-id]");
-  if (decision && panel) void decideApproval(panel.dataset.approvalId, decision.dataset.decision);
+  if (decision && panel) void decideApproval(panel.dataset.approvalId, decision.dataset.decision, panel.dataset.sessionId || null, panel.dataset.turnId || null);
 });
 elements.detail.addEventListener("toggle", (event) => {
   const details = event.target;
@@ -3333,7 +3493,7 @@ elements.detail.addEventListener("change", (event) => {
   const sessionId = commandForm?.dataset.sessionCommand;
   if (sessionId && event.target.matches("[data-model-select]")) {
     const model = event.target.value;
-    const selection = state.composerModelSelections.get(sessionId) || { model: "", reasoningEffort: "", serviceTier: "", cwd: "" };
+    const selection = state.composerModelSelections.get(sessionId) || { model: "", reasoningEffort: "", serviceTier: "", cwd: "", permissionProfile: "" };
     selection.model = model;
     selection.reasoningEffort = "";
     selection.serviceTier = "";
@@ -3343,7 +3503,7 @@ elements.detail.addEventListener("change", (event) => {
   }
   if (sessionId && event.target.matches("[data-fast-toggle]")) {
     const session = state.detailSessions.get(sessionId) || state.sessions.get(sessionId);
-    const selection = state.composerModelSelections.get(sessionId) || { model: "", reasoningEffort: "", serviceTier: "", cwd: "" };
+    const selection = state.composerModelSelections.get(sessionId) || { model: "", reasoningEffort: "", serviceTier: "", cwd: "", permissionProfile: "" };
     if (!selection.model) selection.model = effectiveModelId("", session);
     const tier = fastTier(modelById(effectiveModelId(selection.model, session)));
     selection.serviceTier = event.target.checked ? tier?.id || "priority" : "default";
@@ -3374,7 +3534,10 @@ elements.detailContent.addEventListener("scroll", () => {
   }
 }, { passive: true });
 
-elements.devicesButton.addEventListener("click", () => void showDevices());
+elements.devicesButton.addEventListener("click", () => {
+  if (elements.topMenu) elements.topMenu.open = false;
+  void showDevices();
+});
 elements.newSessionButton.addEventListener("click", showNewSession);
 elements.newSessionClose.addEventListener("click", () => elements.newSessionDialog.close());
 elements.newSessionDialog.addEventListener("click", (event) => {
@@ -3395,10 +3558,12 @@ elements.newSessionFast.addEventListener("change", () => {
   state.newSessionTierTouched = true;
   populateNewSessionModels();
 });
+elements.newSessionPermission.addEventListener("change", populateNewSessionModels);
 elements.newSessionConfigReset.addEventListener("click", () => {
   elements.newSessionModel.value = "";
   elements.newSessionEffort.value = "";
   state.newSessionTierTouched = false;
+  elements.newSessionPermission.value = "";
   populateNewSessionModels();
 });
 elements.newSessionWorkspaces.addEventListener("click", (event) => {
@@ -3473,7 +3638,7 @@ elements.runtimeSettingsDialog.addEventListener("click", (event) => {
   if (!sessionId || !session) return;
   const effortButton = event.target.closest("[data-effort-value]");
   if (effortButton) {
-    const selection = state.composerModelSelections.get(sessionId) || { model: "", reasoningEffort: "", serviceTier: "", cwd: "" };
+    const selection = state.composerModelSelections.get(sessionId) || { model: "", reasoningEffort: "", serviceTier: "", cwd: "", permissionProfile: "" };
     if (effortButton.dataset.effortValue && !selection.model) selection.model = effectiveModelId("", session);
     selection.reasoningEffort = effortButton.dataset.effortValue;
     state.composerModelSelections.set(sessionId, selection);
@@ -3486,7 +3651,7 @@ elements.runtimeSettingsDialog.addEventListener("click", (event) => {
     state.composerModelSelections.delete(sessionId);
     state.detailDirtySessions.add(sessionId);
     renderRuntimeSettingsDialog(sessionId);
-    updateComposerSettingsSummary(elements.detailActions.querySelector(`form[data-session-command="${CSS.escape(sessionId)}"]`), session, { model: "", reasoningEffort: "", serviceTier: "", cwd: "" });
+    updateComposerSettingsSummary(elements.detailActions.querySelector(`form[data-session-command="${CSS.escape(sessionId)}"]`), session, { model: "", reasoningEffort: "", serviceTier: "", cwd: "", permissionProfile: "" });
   }
 });
 
@@ -3494,7 +3659,7 @@ elements.runtimeSettingsDialog.addEventListener("change", (event) => {
   const sessionId = state.runtimeSessionId;
   const session = state.detailSessions.get(sessionId) || state.sessions.get(sessionId);
   if (!sessionId || !session) return;
-  const selection = state.composerModelSelections.get(sessionId) || { model: "", reasoningEffort: "", serviceTier: "", cwd: "" };
+  const selection = state.composerModelSelections.get(sessionId) || { model: "", reasoningEffort: "", serviceTier: "", cwd: "", permissionProfile: "" };
   if (event.target.matches("[data-model-select]")) {
     selection.model = event.target.value;
     selection.reasoningEffort = "";
@@ -3503,6 +3668,8 @@ elements.runtimeSettingsDialog.addEventListener("change", (event) => {
     if (!selection.model) selection.model = effectiveModelId("", session);
     const tier = fastTier(modelById(effectiveModelId(selection.model, session)));
     selection.serviceTier = event.target.checked ? tier?.id || "priority" : "default";
+  } else if (event.target.matches("[data-permission-select]")) {
+    selection.permissionProfile = event.target.value;
   } else return;
   state.composerModelSelections.set(sessionId, selection);
   state.detailDirtySessions.add(sessionId);
@@ -3556,8 +3723,7 @@ elements.notify.addEventListener("click", toggleNotifications);
 
 elements.signalToast.addEventListener("click", () => {
   const sessionId = elements.signalToast.dataset.sessionId;
-  if (elements.signalToast.matches?.(":popover-open")) elements.signalToast.hidePopover();
-  else elements.signalToast.classList.remove("fallback-open");
+  hideSignal(sessionId);
   if (sessionId) void showDetails(sessionId);
 });
 
@@ -3574,6 +3740,18 @@ elements.targetClear.addEventListener("click", () => {
 });
 
 elements.connection.addEventListener("click", () => void reconnectNow());
+
+elements.topMenu?.addEventListener("toggle", () => {
+  elements.topMenuTrigger?.setAttribute("aria-expanded", String(elements.topMenu.open));
+});
+document.addEventListener("click", (event) => {
+  if (elements.topMenu?.open && !elements.topMenu.contains(event.target)) elements.topMenu.open = false;
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || !elements.topMenu?.open) return;
+  elements.topMenu.open = false;
+  elements.topMenuTrigger?.focus();
+});
 
 if ("serviceWorker" in navigator) {
   let reloadingForWorker = false;

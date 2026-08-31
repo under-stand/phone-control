@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="popup.css">
+    <title>Phone Control</title>
+  </head>
+  <body>
+    <main>
+      <div class="status"><span id="dot"></span><strong id="state">正在连接</strong></div>
+      <h1>浏览器遥控</h1>
+      <p id="detail">扩展会连接本机 Phone Control，网页画面只通过你自己的电脑传输。</p>
+      <button id="reconnect" type="button">重新连接</button>
+      <small id="service">127.0.0.1:8787</small>
+    </main>
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>
