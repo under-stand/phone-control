@@ -9,8 +9,8 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=66";
-import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=66";
+} from "./lib/format.js?v=67";
+import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=67";
 
 function storedCompletionKeys() {
   try {
@@ -708,6 +708,25 @@ async function writeClipboardText(value) {
   const copied = document.execCommand?.("copy");
   input.remove();
   if (!copied) throw new Error("浏览器未允许复制");
+}
+
+async function copySessionId(button) {
+  const value = button.dataset.copySessionId;
+  const original = button.textContent;
+  button.disabled = true;
+  try {
+    await writeClipboardText(value);
+    button.textContent = "已复制";
+    toast("Session 标识已复制");
+    setTimeout(() => {
+      if (!button.isConnected) return;
+      button.textContent = original || "复制";
+      button.disabled = false;
+    }, 1_600);
+  } catch (error) {
+    button.disabled = false;
+    toast(error?.message || "复制失败，请长按 Session 标识复制");
+  }
 }
 
 async function request(path, options = {}) {
@@ -2127,6 +2146,11 @@ function isExternallyOwned(session) {
   return /another Codex runtime|active writer|observe-only/i.test(reason);
 }
 
+function sessionIdMarkup(id) {
+  const value = String(id || "Unknown");
+  return `<span class="session-id-wrap"><code class="session-id-value" title="完整 Session 标识">${escapeHtml(value)}</code><button class="session-id-copy" type="button" data-copy-session-id="${escapeHtml(value)}" aria-label="复制 Session 标识">复制</button></span>`;
+}
+
 function queuedCommandsMarkup(session) {
   const queued = Array.isArray(session.queuedCommands) ? session.queuedCommands : [];
   if (!queued.length) return "";
@@ -2243,6 +2267,7 @@ function renderDetails(session, { loading = false } = {}) {
   const showControlNotice = controlIsImportant || (!question && !approval && !composer);
   const deletionBlocked = ["working", "waiting"].includes(session.status);
   const technicalOpen = Boolean(elements.detailContent.querySelector(".technical-details[open]"));
+  const detailMoreOpen = Boolean(elements.detailHeader.querySelector(".detail-more[open]"));
   syncMarkup(elements.detailHeader, `
     <div class="detail-heading">
       <div class="detail-title-block">
@@ -2251,16 +2276,22 @@ function renderDetails(session, { loading = false } = {}) {
           <span class="detail-status" data-status="${escapeHtml(displayStatus)}"><i aria-hidden="true"></i><b>${labels[displayStatus] || labels.unknown}</b></span>
           <span class="detail-project-context">${escapeHtml(projectName(session))} · ${escapeHtml(session.surface)}</span>
           <span class="detail-heading-actions">
-            <button class="task-title-jump" type="button" data-open-task-title>命名</button>
-            ${session.taskKind === "user" ? `<button class="session-branch" type="button" data-branch-session="${escapeHtml(session.id)}" title="带着当前历史开一个可独立继续的新会话">分叉继续</button>` : ""}
-            ${session.control?.canHandoff ? `<button class="session-handoff" type="button" data-handoff-session="${escapeHtml(session.id)}" title="释放 Phone Control 的会话占用，让电脑端继续">移交电脑</button>` : ""}
-            ${session.control?.canReclaim ? `<button class="session-reclaim" type="button" data-reclaim-session="${escapeHtml(session.id)}" title="确认电脑端已释放后，重新由手机控制">手机接管</button>` : ""}
-            <button class="target-toggle${state.targetSessionId === session.id ? " active" : ""}" type="button" data-target-session-id="${escapeHtml(session.id)}" aria-label="${state.targetSessionId === session.id ? "取消追踪这个会话" : "追踪这个会话"}" aria-pressed="${state.targetSessionId === session.id}" title="${state.targetSessionId === session.id ? "取消目标追踪" : "固定到手机顶部并只提醒这个会话"}"><img src="/icons/crosshair-simple.svg" alt=""><b>${state.targetSessionId === session.id ? "已追踪" : "追踪"}</b></button>
+            <button class="target-toggle${state.targetSessionId === session.id ? " active" : ""}" type="button" data-target-session-id="${escapeHtml(session.id)}" aria-label="${state.targetSessionId === session.id ? "取消追踪这个会话" : "追踪这个会话"}" aria-pressed="${state.targetSessionId === session.id}" title="${state.targetSessionId === session.id ? "取消目标追踪" : "固定到手机顶部并只提醒这个会话"}"><img src="/icons/crosshair-simple.svg" alt=""><b class="sr-only">${state.targetSessionId === session.id ? "已追踪" : "追踪"}</b></button>
+            <details class="detail-more">
+              <summary class="detail-more-trigger" aria-label="更多会话操作" title="更多会话操作"><span aria-hidden="true">•••</span><b class="sr-only">更多</b></summary>
+              <div class="detail-more-menu">
+                <button class="task-title-jump" type="button" data-open-task-title>命名卡片</button>
+                ${session.taskKind === "user" ? `<button class="session-branch" type="button" data-branch-session="${escapeHtml(session.id)}" title="带着当前历史开一个可独立继续的新会话">分叉继续</button>` : ""}
+                ${session.control?.canHandoff ? `<button class="session-handoff" type="button" data-handoff-session="${escapeHtml(session.id)}" title="释放 Phone Control 的会话占用，让电脑端继续">移交电脑</button>` : ""}
+                ${session.control?.canReclaim ? `<button class="session-reclaim" type="button" data-reclaim-session="${escapeHtml(session.id)}" title="确认电脑端已释放后，重新由手机控制">手机接管</button>` : ""}
+              </div>
+            </details>
           </span>
         </div>
       </div>
     </div>
     `);
+  elements.detailHeader.querySelector(".detail-more")?.toggleAttribute("open", detailMoreOpen);
   syncDetailContent({
     control: `${showControlNotice ? `<div class="control-note${controlIsImportant ? "" : " is-compact"}"><b>${escapeHtml(controlChannelLabel(session))}</b><p>${escapeHtml(controlExplanation(session))}</p></div>` : ""}${queuedCommandsMarkup(session)}`,
     conversationMarkup: loading ? `<div class="conversation-loading"><i></i><i></i><i></i></div>` : conversation(session.events, session),
@@ -2277,7 +2308,7 @@ function renderDetails(session, { loading = false } = {}) {
         <div><dt>模型</dt><dd>${escapeHtml(session.model || "Unknown")}${session.reasoningEffort || isFastServiceTier(session.serviceTier) ? `<small>${[session.reasoningEffort ? `推理 ${modelEffortLabel(session.reasoningEffort)}` : null, isFastServiceTier(session.serviceTier) ? "Fast" : null].filter(Boolean).map(escapeHtml).join(" · ")}</small>` : ""}</dd></div>
         <div><dt>权限</dt><dd>${escapeHtml(session.permissionMode || "Unknown")}</dd></div>
         <div><dt>目录</dt><dd title="${escapeHtml(session.cwd || "Unknown workspace")}">${escapeHtml(projectName(session))}</dd></div>
-        <div><dt>Session</dt><dd><code>${escapeHtml(compactId(session.id))}</code></dd></div>
+        <div><dt>Session</dt><dd>${sessionIdMarkup(session.id)}</dd></div>
       </dl>
       <div class="session-management">
         <div><b>永久删除 Codex 会话</b><small>${deletionBlocked ? displayStatus === "disconnected" ? "请先在电脑端确认旧 turn 已停止" : "请先停止或等待当前任务结束" : "删除原始记录、关联元数据及其子会话，不可恢复"}</small></div>
@@ -2608,6 +2639,7 @@ async function cancelQueuedCommand(button) {
 async function branchSession(button) {
   const sessionId = button.dataset.branchSession;
   if (!sessionId) return;
+  button.closest(".detail-more")?.removeAttribute("open");
   const text = window.prompt("基于当前会话创建新分支。请输入新分支的第一条指令：");
   if (!text?.trim()) return;
   button.disabled = true;
@@ -2763,6 +2795,7 @@ function permissionSummary(session, configuration) {
 async function handoffSession(button) {
   const sessionId = button.dataset.handoffSession;
   if (!sessionId) return;
+  button.closest(".detail-more")?.removeAttribute("open");
   const warning = "把这个会话移交到电脑端？\n\n会话和历史都会保留，Phone Control 会释放写入占用并把手机端切成只读。由于当前空闲会话共用一个受管 App Server，其他由手机持有的空闲会话也会同时释放。\n\n请确认没有其他手机任务正在执行，然后再继续。";
   if (!window.confirm(warning)) return;
   button.disabled = true;
@@ -2796,6 +2829,7 @@ async function handoffSession(button) {
 async function reclaimSession(button) {
   const sessionId = button.dataset.reclaimSession;
   if (!sessionId) return;
+  button.closest(".detail-more")?.removeAttribute("open");
   const warning = "重新由手机接管这个会话？\n\n请先在电脑端等待当前任务结束，并完全关闭该会话。接管成功后不要继续在电脑端打开它，否则会再次发生写入者冲突。";
   if (!window.confirm(warning)) return;
   button.disabled = true;
@@ -2844,7 +2878,7 @@ function renderStatus(payload) {
         <div><dt>模型</dt><dd>${escapeHtml(model)}${modelDetails ? `<small>${escapeHtml(modelDetails)}</small>` : ""}</dd></div>
         <div><dt>项目</dt><dd>${escapeHtml(projectName(session))}<small>${escapeHtml(session.surface || "Unknown")}</small></dd></div>
         <div><dt>权限</dt><dd>${escapeHtml(permissionSummary(session, configuration))}</dd></div>
-        <div><dt>Session</dt><dd><code>${escapeHtml(compactId(session.id))}</code><small>${escapeHtml(labels[session.status] || labels.unknown)}</small></dd></div>
+        <div><dt>Session</dt><dd>${sessionIdMarkup(session.id)}<small>${escapeHtml(labels[session.status] || labels.unknown)}</small></dd></div>
       </dl>
     </section>` : `
     <section class="status-block"><p class="status-block-label">当前会话</p><p class="detail-empty">还没有可展示的 Codex 会话。</p></section>`;
@@ -3421,6 +3455,7 @@ elements.list.addEventListener("toggle", (event) => {
 elements.detailClose.addEventListener("click", () => elements.detail.close());
 elements.detail.addEventListener("close", () => {
   const sessionId = elements.detail.dataset.sessionId;
+  elements.detailHeader.querySelector(".detail-more")?.removeAttribute("open");
   elements.detailContent.querySelector(".technical-details")?.removeAttribute("open");
   state.detailDirtySessions.delete(sessionId);
   clearDetailUpdatePending(sessionId);
@@ -3436,8 +3471,14 @@ elements.detail.addEventListener("pointerdown", (event) => {
 elements.detail.addEventListener("click", (event) => {
   if (event.target === elements.detail && detailBackdropPointerDown) elements.detail.close();
   detailBackdropPointerDown = false;
+  const copySessionButton = event.target.closest("[data-copy-session-id]");
+  if (copySessionButton) {
+    void copySessionId(copySessionButton);
+    return;
+  }
   const openTaskTitle = event.target.closest("[data-open-task-title]");
   if (openTaskTitle) {
+    openTaskTitle.closest(".detail-more")?.removeAttribute("open");
     const technical = elements.detailContent.querySelector(".technical-details");
     const form = technical?.querySelector("[data-task-title-form]");
     if (technical && form) {
@@ -3786,6 +3827,8 @@ elements.statusClose.addEventListener("click", () => elements.statusDialog.close
 elements.statusRefresh.addEventListener("click", () => void showStatus({ refresh: true }));
 elements.statusDialog.addEventListener("click", (event) => {
   if (event.target === elements.statusDialog) elements.statusDialog.close();
+  const copySessionButton = event.target.closest("[data-copy-session-id]");
+  if (copySessionButton) void copySessionId(copySessionButton);
 });
 elements.devicesClose.addEventListener("click", () => elements.devicesDialog.close());
 elements.devicesDialog.addEventListener("click", (event) => {

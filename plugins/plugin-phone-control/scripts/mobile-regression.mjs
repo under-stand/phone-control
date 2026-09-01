@@ -504,6 +504,7 @@ https://inside-fence.example
   assert.equal(bridge.createdSessions[0].reasoningEffort, "xhigh");
   assert.equal(bridge.createdSessions[0].serviceTier, "priority");
   assert.equal(bridge.createdSessions[0].permissionProfile, "on-request");
+  await page.locator("#detail[open] .detail-more-trigger").click();
   await page.locator("#detail[open] [data-open-task-title]").click();
   assert.equal(await page.locator("#detail[open] .technical-details").getAttribute("open"), "", "the compact header naming action must reveal task-title controls directly");
   await page.locator('[data-task-title-form="thread-phone-created-1"] .task-title-suggest').waitFor();
@@ -521,6 +522,7 @@ https://inside-fence.example
   runtime.store.ingest(event("thread-phone-created-1", 1, "turn_complete", { turnId: "turn-phone-created-1", surface: "Desktop" }));
   bridge.set("thread-phone-created-1", { status: "idle", activeFlags: [], activeTurnId: null });
   await page.waitForTimeout(400);
+  await page.locator("#detail[open] .detail-more-trigger").click();
   const handoffCreated = page.locator('[data-handoff-session="thread-phone-created-1"]');
   await handoffCreated.waitFor();
   assert.equal(await handoffCreated.isEnabled(), true, "an idle desktop-app session must expose desktop handoff");
@@ -529,6 +531,7 @@ https://inside-fence.example
     await dialog.accept();
   });
   await handoffCreated.click();
+  await page.locator("#detail[open] .detail-more-trigger").click();
   const reclaimCreated = page.locator('[data-reclaim-session="thread-phone-created-1"]');
   await reclaimCreated.waitFor();
   assert.equal(bridge.handoffs[0].sessionId, "thread-phone-created-1");
@@ -537,6 +540,7 @@ https://inside-fence.example
     await dialog.accept();
   });
   await reclaimCreated.click();
+  await page.locator("#detail[open] .detail-more-trigger").click();
   await page.locator('[data-handoff-session="thread-phone-created-1"]').waitFor();
   assert.equal(bridge.reclaims[0].sessionId, "thread-phone-created-1");
   await page.locator("#detail-close").click();
@@ -567,6 +571,14 @@ https://inside-fence.example
   await page.locator("#detail[open] .detail-heading").waitFor();
   const detailPreviewMs = Math.round(performance.now() - detailPreviewStartedAt);
   assert.ok(detailPreviewMs < 300, `the summary-backed detail preview took ${detailPreviewMs}ms`);
+  await page.locator("#detail[open] .detail-more-trigger").click();
+  assert.equal(await page.locator("#detail[open] .detail-more-menu [data-open-task-title]").count(), 1, "secondary detail actions should be grouped behind one more-actions menu");
+  assert.equal(await page.locator("#detail[open] .detail-more-menu [data-branch-session]").count(), 1, "branch continuation should remain available from the more-actions menu");
+  await page.locator("#detail[open] .detail-more-trigger").click();
+  await page.locator("#detail[open] .technical-details summary").click();
+  assert.equal(await page.locator("#detail[open] .session-id-value").textContent(), "thread-active", "session details must show the full session identifier for unambiguous debugging");
+  await page.locator("#detail[open] .session-id-copy").click();
+  assert.equal(await page.evaluate(() => window.__phoneControlCopiedText), "thread-active", "session identifiers should be copyable from technical details");
   await page.locator('[data-target-session-id="thread-active"]').click();
   assert.equal(await page.evaluate(() => localStorage.getItem("phone-control-target-session-v1")), "thread-active");
   assert.equal(await page.locator('[data-target-session-id="thread-active"]').getAttribute("aria-pressed"), "true");
