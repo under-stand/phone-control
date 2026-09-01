@@ -2159,10 +2159,10 @@ function controlChannelLabel(session) {
   if (session.control?.action === "steer") return "可追加指令";
   if (session.control?.action === "start") return "可继续会话";
   if (session.control?.action === "resume") return "可恢复会话";
-  if (isUserTask(session) && !session.control?.canSend && !session.control?.canAnswer && !session.control?.canApprove) return "可排队续作";
   if (session.control?.reason?.startsWith("A stop request was delivered")) return "正在停止";
   if (session.control?.reason?.startsWith("Live control unavailable:")) return "控制已隔离 · 只读";
   if (!session.control?.live && session.liveness === "recent" && ["working", "waiting"].includes(session.status)) return "正在恢复连接";
+  if (isUserTask(session) && !session.control?.canSend && !session.control?.canAnswer && !session.control?.canApprove) return "可排队续作";
   return session.control?.live ? "现场已验证" : "只读";
 }
 
@@ -2178,11 +2178,11 @@ function controlExplanation(session) {
   if (session.control?.action === "steer") return "手机指令会追加到当前正在执行的 turn；发送前会再次校验。";
   if (session.control?.action === "start") return "这个 thread 当前空闲，可以直接开始下一轮。";
   if (session.control?.action === "resume") return "Phone Control 会先恢复本机 thread，再开始下一轮。";
-  if (isUserTask(session) && !session.control?.canSend && !session.control?.canAnswer && !session.control?.canApprove) return "当前无法安全直发，但可以先把指令排入手机续作队列。连接恢复、电脑释放且 turn 状态重新验证后，系统才会发送；如果原 turn 已变化，会停在“需要确认”，不会误发。";
   if (session.control?.reason?.startsWith("A stop request was delivered")) return "停止请求已送达 Codex，正在等待当前 turn 确认结束。会话仍会保留。";
   if (session.control?.reason?.startsWith("Live control unavailable:")) return "Phone Control 已隔离这个会话的实时控制，避免异常大消息反复拖断其他会话；历史追踪仍可使用。重启服务后会重新验证。";
   if (session.control?.live) return "现场连接已验证，但当前状态暂不适合发送新指令。";
   if (session.liveness === "recent" && ["working", "waiting"].includes(session.status)) return "App Server 正在恢复连接；草稿会保留，连接验证完成后即可继续发送。";
+  if (isUserTask(session) && !session.control?.canSend && !session.control?.canAnswer && !session.control?.canApprove) return "当前无法安全直发，但可以先把指令排入手机续作队列。连接恢复、电脑释放且 turn 状态重新验证后，系统才会发送；如果原 turn 已变化，会停在“需要确认”，不会误发。";
   return "当前只读追踪。Phone Control 没有验证到可安全控制的现场 thread。";
 }
 
