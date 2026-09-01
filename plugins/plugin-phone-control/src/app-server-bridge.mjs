@@ -289,11 +289,14 @@ function permissionSelection(value, cwd, confirmed = false) {
   if (value == null || value === "" || value === "default") return null;
   if (typeof value !== "string") throw httpError("Permission profile is invalid", 400);
   const profile = value.trim();
-  if (!new Set(["read-only", "workspace-write", "on-request", "danger-full-access"]).has(profile)) {
+  if (!new Set(["read-only", "workspace-write", "workspace-write-network", "on-request", "danger-full-access"]).has(profile)) {
     throw httpError("Permission profile is invalid", 400);
   }
   if (profile === "danger-full-access" && !confirmed) {
     throw httpError("Full computer access requires explicit confirmation", 400);
+  }
+  if (profile === "workspace-write-network" && !confirmed) {
+    throw httpError("Network access requires explicit confirmation", 400);
   }
   if (profile === "read-only") {
     return {
@@ -320,9 +323,9 @@ function permissionSelection(value, cwd, confirmed = false) {
     sandboxPolicy: {
       type: "workspaceWrite",
       writableRoots: cwd ? [cwd] : [],
-      networkAccess: false,
+      networkAccess: profile === "workspace-write-network",
     },
-    permissionMode: "workspace-write",
+    permissionMode: profile === "workspace-write-network" ? "workspace-write-network" : "workspace-write",
   };
 }
 

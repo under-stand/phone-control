@@ -427,6 +427,26 @@ export const tests = [
     },
   },
   {
+    name: "restores workspace network permission from a rollout turn context",
+    run() {
+      const context = createRolloutContext("/tmp/rollout-network-context.jsonl");
+      normalizeRolloutRecord({ type: "session_meta", timestamp: "2026-08-23T12:00:00Z", payload: { id: "thread-network-context", source: "desktop" } }, context);
+      normalizeRolloutRecord({
+        type: "turn_context",
+        timestamp: "2026-08-23T12:00:01Z",
+        payload: {
+          cwd: "C:/repo",
+          approval_policy: "never",
+          permission_profile: { type: "workspace-write" },
+          sandbox_policy: { type: "workspaceWrite", networkAccess: true },
+        },
+      }, context);
+      const event = normalizeRolloutRecord({ type: "event_msg", timestamp: "2026-08-23T12:00:02Z", payload: { type: "agent_message", message: "Network context restored" } }, context)[0];
+      assert.equal(event.permissionMode, "workspace-write-network");
+      assert.equal(event.approvalPolicy, "never");
+    },
+  },
+  {
     name: "keeps long final replies beyond the former mobile truncation limit",
     run() {
       const context = createRolloutContext("/tmp/rollout-long-reply.jsonl");

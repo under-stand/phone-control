@@ -7,7 +7,7 @@
     <meta name="description" content="在手机上实时追踪本机 Codex Desktop 和 CLI 任务。">
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/styles.css?v=74">
+    <link rel="stylesheet" href="/styles.css?v=75">
     <title>Phone Control</title>
   </head>
   <body>
@@ -178,6 +178,7 @@
                 <option value="">跟随本机 Codex 默认</option>
                 <option value="read-only">只读</option>
                 <option value="workspace-write">工作区内自动执行</option>
+                <option value="workspace-write-network">工作区写入 + 网络（需确认）</option>
                 <option value="on-request">超出工作区时询问</option>
                 <option value="danger-full-access">完全访问电脑</option>
               </select><img src="/icons/caret-down.svg" alt=""></span>
@@ -215,6 +216,6 @@
       <span class="signal-toast-mark">✓</span>
       <span aria-live="polite"><b id="signal-toast-title">任务已完成</b><small id="signal-toast-body">点按查看最新结果</small></span>
     </button>
-    <script src="/app.js?v=74" type="module"></script>
+    <script src="/app.js?v=75" type="module"></script>
   </body>
 </html>

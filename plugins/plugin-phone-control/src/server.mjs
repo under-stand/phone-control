@@ -177,13 +177,14 @@ function inheritedSessionExecutionContext(session = {}) {
   let permissionProfile = null;
   if (permissionMode === "read-only" || permissionMode === "readonly") {
     permissionProfile = "read-only";
+  } else if (permissionMode === "workspace-write-network" || permissionMode === "workspacewritenetwork") {
+    permissionProfile = "workspace-write-network";
   } else if (permissionMode === "workspace-write" || permissionMode === "workspacewrite") {
     permissionProfile = /on.?request/.test(approvalPolicy) ? "on-request" : "workspace-write";
   } else if (permissionMode === "danger-full-access" || permissionMode === "dangerfullaccess") {
-    // A desktop thread may have been running with full access. Phone
-    // continuations inherit only the project-scoped write capability unless
-    // the user explicitly confirms full access in the composer.
-    permissionProfile = /on.?request/.test(approvalPolicy) ? "on-request" : "workspace-write";
+    // Preserve the desktop thread's exact permission profile. The phone UI
+    // asks for explicit confirmation before sending a full-access turn.
+    permissionProfile = "danger-full-access";
   }
   return {
     cwd: session.cwd || null,

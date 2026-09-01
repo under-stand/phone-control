@@ -65,9 +65,16 @@ function permissionModeFromSettings(settings) {
     settings.permission_profile?.type
       ?? settings.permissionProfile?.type,
   )?.toLowerCase() || "";
+  const sandboxPolicy = settings.sandbox_policy && typeof settings.sandbox_policy === "object"
+    ? settings.sandbox_policy
+    : settings.sandboxPolicy && typeof settings.sandboxPolicy === "object"
+      ? settings.sandboxPolicy
+      : null;
+  const networkAccess = sandboxPolicy?.networkAccess === true || sandboxPolicy?.network_access === true;
   const value = `${activeId} ${sandbox} ${profileType}`;
   if (value.includes("read-only") || value.includes("readonly")) return "read-only";
   if (value.includes("danger-full-access") || value.includes("dangerfullaccess")) return "danger-full-access";
+  if (networkAccess && (value.includes("workspace-write") || value.includes("workspacewrite"))) return "workspace-write-network";
   if (value.includes("workspace-write") || value.includes("workspacewrite")) return "workspace-write";
   return null;
 }

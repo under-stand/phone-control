@@ -9,8 +9,8 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=74";
-import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=74";
+} from "./lib/format.js?v=75";
+import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=75";
 
 function storedCompletionKeys() {
   try {
@@ -888,9 +888,25 @@ function modelOptions(selected = "", inheritLabel = "沿用当前设置") {
 const permissionProfiles = Object.freeze({
   "read-only": { label: "只读", hint: "不允许写文件，也不会为写入操作弹出审批。" },
   "workspace-write": { label: "工作区内自动执行", hint: "可修改当前项目；工作区外与网络访问会被沙箱阻止。" },
+  "workspace-write-network": { label: "工作区写入 + 网络（需确认）", hint: "可修改当前项目并访问网络，适合 git push；不会访问工作区外文件。发送前需要确认。" },
   "on-request": { label: "超出工作区时询问", hint: "项目内可正常工作；额外命令或文件权限会发送到手机审批。" },
   "danger-full-access": { label: "完全访问电脑", hint: "关闭沙箱并自动执行。风险很高，发送前需要再次确认。" },
 });
+
+function requiresPermissionConfirmation(profile) {
+  return profile === "workspace-write-network" || profile === "danger-full-access";
+}
+
+function inheritedPermissionProfile(session) {
+  const mode = String(session?.permissionMode || "").trim().toLowerCase();
+  if (mode === "read-only" || mode === "readonly") return "read-only";
+  if (mode === "workspace-write-network" || mode === "workspacewritenetwork") return "workspace-write-network";
+  if (mode === "workspace-write" || mode === "workspacewrite") {
+    return /on.?request/.test(String(session?.approvalPolicy || "").trim().toLowerCase()) ? "on-request" : "workspace-write";
+  }
+  if (mode === "danger-full-access" || mode === "dangerfullaccess") return "danger-full-access";
+  return "";
+}
 
 function permissionProfileLabel(value, fallback = "沿用当前权限") {
   return permissionProfiles[value]?.label || fallback;
@@ -2541,6 +2557,7 @@ async function sendSessionInput(form) {
   const text = textarea.value.trim();
   const attachments = state.attachments.get(sessionId) || [];
   const modelSelection = state.composerModelSelections.get(sessionId) || { model: "", reasoningEffort: "", serviceTier: "", cwd: "", permissionProfile: "" };
+  const session = state.detailSessions.get(sessionId) || state.sessions.get(sessionId);
   if (!text && !attachments.length) {
     status.textContent = "请输入指令或添加图片";
     textarea.focus();
@@ -2550,10 +2567,13 @@ async function sendSessionInput(form) {
     status.textContent = "排队发送目前只支持文字，请连接恢复后再添加图片";
     return;
   }
-  const confirmDangerFullAccess = form.dataset.controlAction !== "steer" && modelSelection.permissionProfile === "danger-full-access"
-    ? window.confirm("允许下一轮完全访问电脑？\n\n这会关闭沙箱并自动执行命令与文件修改。仅在你完全信任这条指令时继续。")
+  const effectivePermissionProfile = modelSelection.permissionProfile || inheritedPermissionProfile(session);
+  const confirmDangerFullAccess = form.dataset.controlAction !== "steer" && requiresPermissionConfirmation(effectivePermissionProfile)
+    ? window.confirm(effectivePermissionProfile === "danger-full-access"
+      ? "允许下一轮完全访问电脑？\n\n这会关闭沙箱并自动执行命令与文件修改。仅在你完全信任这条指令时继续。"
+      : "允许下一轮访问网络？\n\n这会允许当前项目执行 git push、安装依赖等网络操作，但不会访问工作区外文件。继续吗？")
     : false;
-  if (modelSelection.permissionProfile === "danger-full-access" && !confirmDangerFullAccess) return;
+  if (requiresPermissionConfirmation(effectivePermissionProfile) && !confirmDangerFullAccess) return;
   button.disabled = true;
   textarea.disabled = true;
   for (const control of form.querySelectorAll("input, select, .attach-button")) control.disabled = true;
@@ -2770,6 +2790,7 @@ function permissionSummary(session, configuration) {
   const labels = {
     "workspace-write": "工作区写入",
     workspaceWrite: "工作区写入",
+    "workspace-write-network": "工作区写入 + 网络",
     "read-only": "只读沙箱",
     readOnly: "只读沙箱",
     "danger-full-access": "完全访问",
@@ -3032,10 +3053,12 @@ async function createNewSession() {
     (text ? elements.newSessionCwd : elements.newSessionInput).focus();
     return;
   }
-  const confirmDangerFullAccess = permissionProfile === "danger-full-access"
-    ? window.confirm("允许这个 Codex 会话完全访问电脑？\n\n这会关闭沙箱并自动执行命令与文件修改。仅在你完全信任任务内容时继续。")
+  const confirmDangerFullAccess = requiresPermissionConfirmation(permissionProfile)
+    ? window.confirm(permissionProfile === "danger-full-access"
+      ? "允许这个 Codex 会话完全访问电脑？\n\n这会关闭沙箱并自动执行命令与文件修改。仅在你完全信任任务内容时继续。"
+      : "允许这个 Codex 会话访问网络？\n\n这会允许当前项目执行 git push、安装依赖等网络操作，但不会访问工作区外文件。继续吗？")
     : false;
-  if (permissionProfile === "danger-full-access" && !confirmDangerFullAccess) return;
+  if (requiresPermissionConfirmation(permissionProfile) && !confirmDangerFullAccess) return;
   elements.newSessionSubmit.disabled = true;
   elements.newSessionSubmit.textContent = "正在创建…";
   elements.newSessionError.textContent = "正在连接 Codex 并创建独立会话";

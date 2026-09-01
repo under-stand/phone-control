@@ -611,6 +611,42 @@ export const tests = [
     },
   },
   {
+    name: "allows an explicitly confirmed workspace write profile with network access",
+    async run() {
+      const workingDirectory = os.tmpdir();
+      const harness = transportHarness({ loadedThreads: [] });
+      const bridge = new CodexAppServerBridge({ transportFactory: harness.transportFactory, reconnect: false, loadedThreadRefreshMs: 0 });
+      try {
+        await bridge.start();
+        await assert.rejects(bridge.createSession({
+          text: "Unconfirmed network access",
+          cwd: workingDirectory,
+          permissionProfile: "workspace-write-network",
+          clientMessageId: "phone-network-profile-denied-0001",
+        }), (error) => error.statusCode === 400);
+        const command = await bridge.createSession({
+          text: "Push the current project",
+          cwd: workingDirectory,
+          permissionProfile: "workspace-write-network",
+          confirmDangerFullAccess: true,
+          clientMessageId: "phone-network-profile-0001",
+        });
+        const threadStart = harness.sent.find((message) => message.method === "thread/start");
+        assert.equal(threadStart.params.sandbox, "workspaceWrite");
+        const turnStart = harness.sent.find((message) => message.method === "turn/start");
+        assert.deepEqual(turnStart.params.sandboxPolicy, {
+          type: "workspaceWrite",
+          writableRoots: [workingDirectory],
+          networkAccess: true,
+        });
+        assert.equal(command.permissionProfile, "workspace-write-network");
+        assert.equal(command.permissionMode, "workspace-write-network");
+      } finally {
+        await bridge.close();
+      }
+    },
+  },
+  {
     name: "requires confirmation for full access and answers native approvals only for phone-owned turns",
     async run() {
       const workingDirectory = os.tmpdir();
