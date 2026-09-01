@@ -285,19 +285,16 @@ function normalizeModelSelection(value, label) {
   return normalized;
 }
 
-function permissionSelection(value, cwd, confirmed = false) {
+function permissionSelection(value, cwd, _confirmed = false) {
   if (value == null || value === "" || value === "default") return null;
   if (typeof value !== "string") throw httpError("Permission profile is invalid", 400);
   const profile = value.trim();
   if (!new Set(["read-only", "workspace-write", "workspace-write-network", "on-request", "danger-full-access"]).has(profile)) {
     throw httpError("Permission profile is invalid", 400);
   }
-  if (profile === "danger-full-access" && !confirmed) {
-    throw httpError("Full computer access requires explicit confirmation", 400);
-  }
-  if (profile === "workspace-write-network" && !confirmed) {
-    throw httpError("Network access requires explicit confirmation", 400);
-  }
+  // Permission inheritance is intentionally exact. The phone UI displays a
+  // warning for elevated profiles, but the warning is informational and must
+  // not silently change or block the session's existing permission context.
   if (profile === "read-only") {
     return {
       profile,

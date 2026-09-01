@@ -888,12 +888,12 @@ function modelOptions(selected = "", inheritLabel = "沿用当前设置") {
 const permissionProfiles = Object.freeze({
   "read-only": { label: "只读", hint: "不允许写文件，也不会为写入操作弹出审批。" },
   "workspace-write": { label: "工作区内自动执行", hint: "可修改当前项目；工作区外与网络访问会被沙箱阻止。" },
-  "workspace-write-network": { label: "工作区写入 + 网络（需确认）", hint: "可修改当前项目并访问网络，适合 git push；不会访问工作区外文件。发送前需要确认。" },
+  "workspace-write-network": { label: "工作区写入 + 网络", hint: "可修改当前项目并访问网络，适合 git push；不会访问工作区外文件。发送前会提示风险。" },
   "on-request": { label: "超出工作区时询问", hint: "项目内可正常工作；额外命令或文件权限会发送到手机审批。" },
-  "danger-full-access": { label: "完全访问电脑", hint: "关闭沙箱并自动执行。风险很高，发送前需要再次确认。" },
+  "danger-full-access": { label: "完全访问电脑", hint: "关闭沙箱并自动执行。风险很高，发送前会提示风险。" },
 });
 
-function requiresPermissionConfirmation(profile) {
+function needsPermissionReminder(profile) {
   return profile === "workspace-write-network" || profile === "danger-full-access";
 }
 
@@ -2568,12 +2568,11 @@ async function sendSessionInput(form) {
     return;
   }
   const effectivePermissionProfile = modelSelection.permissionProfile || inheritedPermissionProfile(session);
-  const confirmDangerFullAccess = form.dataset.controlAction !== "steer" && requiresPermissionConfirmation(effectivePermissionProfile)
-    ? window.confirm(effectivePermissionProfile === "danger-full-access"
-      ? "允许下一轮完全访问电脑？\n\n这会关闭沙箱并自动执行命令与文件修改。仅在你完全信任这条指令时继续。"
-      : "允许下一轮访问网络？\n\n这会允许当前项目执行 git push、安装依赖等网络操作，但不会访问工作区外文件。继续吗？")
-    : false;
-  if (requiresPermissionConfirmation(effectivePermissionProfile) && !confirmDangerFullAccess) return;
+  if (form.dataset.controlAction !== "steer" && needsPermissionReminder(effectivePermissionProfile)) {
+    window.alert(effectivePermissionProfile === "danger-full-access"
+      ? "提醒：下一轮将沿用当前会话的完全访问电脑权限。\n\n这会关闭沙箱并自动执行命令与文件修改。"
+      : "提醒：下一轮将沿用当前会话的工作区网络权限。\n\n当前项目可以执行 git push、安装依赖等网络操作。\n\n手机端不会替换或降低会话权限。");
+  }
   button.disabled = true;
   textarea.disabled = true;
   for (const control of form.querySelectorAll("input, select, .attach-button")) control.disabled = true;
@@ -2595,7 +2594,7 @@ async function sendSessionInput(form) {
         reasoningEffort: form.dataset.controlAction === "steer" ? null : modelSelection.reasoningEffort || null,
         serviceTier: form.dataset.controlAction === "steer" ? null : modelSelection.serviceTier || null,
         permissionProfile: form.dataset.controlAction === "steer" ? null : modelSelection.permissionProfile || null,
-        confirmDangerFullAccess,
+        confirmDangerFullAccess: needsPermissionReminder(effectivePermissionProfile),
         cwd: form.dataset.controlAction === "steer" ? null : modelSelection.cwd || null,
         clientMessageId: clientMessageId(),
       }),
@@ -3053,12 +3052,11 @@ async function createNewSession() {
     (text ? elements.newSessionCwd : elements.newSessionInput).focus();
     return;
   }
-  const confirmDangerFullAccess = requiresPermissionConfirmation(permissionProfile)
-    ? window.confirm(permissionProfile === "danger-full-access"
-      ? "允许这个 Codex 会话完全访问电脑？\n\n这会关闭沙箱并自动执行命令与文件修改。仅在你完全信任任务内容时继续。"
-      : "允许这个 Codex 会话访问网络？\n\n这会允许当前项目执行 git push、安装依赖等网络操作，但不会访问工作区外文件。继续吗？")
-    : false;
-  if (requiresPermissionConfirmation(permissionProfile) && !confirmDangerFullAccess) return;
+  if (needsPermissionReminder(permissionProfile)) {
+    window.alert(permissionProfile === "danger-full-access"
+      ? "提醒：这个会话将使用完全访问电脑权限。\n\n这会关闭沙箱并自动执行命令与文件修改。"
+      : "提醒：这个会话将允许当前项目访问网络，可用于 git push、安装依赖等操作。\n\n不会访问工作区外文件。");
+  }
   elements.newSessionSubmit.disabled = true;
   elements.newSessionSubmit.textContent = "正在创建…";
   elements.newSessionError.textContent = "正在连接 Codex 并创建独立会话";
@@ -3066,7 +3064,7 @@ async function createNewSession() {
     const payload = await request("/api/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text, cwd, model: model || null, reasoningEffort: reasoningEffort || null, serviceTier, permissionProfile: permissionProfile || null, confirmDangerFullAccess, clientMessageId: clientMessageId() }),
+      body: JSON.stringify({ text, cwd, model: model || null, reasoningEffort: reasoningEffort || null, serviceTier, permissionProfile: permissionProfile || null, confirmDangerFullAccess: needsPermissionReminder(permissionProfile), clientMessageId: clientMessageId() }),
       timeoutMs: 15_000,
     });
     const sessionId = payload.command?.sessionId;

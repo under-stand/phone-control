@@ -611,24 +611,17 @@ export const tests = [
     },
   },
   {
-    name: "allows an explicitly confirmed workspace write profile with network access",
+    name: "allows a workspace write profile with network access after an informational warning",
     async run() {
       const workingDirectory = os.tmpdir();
       const harness = transportHarness({ loadedThreads: [] });
       const bridge = new CodexAppServerBridge({ transportFactory: harness.transportFactory, reconnect: false, loadedThreadRefreshMs: 0 });
       try {
         await bridge.start();
-        await assert.rejects(bridge.createSession({
-          text: "Unconfirmed network access",
-          cwd: workingDirectory,
-          permissionProfile: "workspace-write-network",
-          clientMessageId: "phone-network-profile-denied-0001",
-        }), (error) => error.statusCode === 400);
         const command = await bridge.createSession({
           text: "Push the current project",
           cwd: workingDirectory,
           permissionProfile: "workspace-write-network",
-          confirmDangerFullAccess: true,
           clientMessageId: "phone-network-profile-0001",
         });
         const threadStart = harness.sent.find((message) => message.method === "thread/start");
@@ -647,19 +640,20 @@ export const tests = [
     },
   },
   {
-    name: "requires confirmation for full access and answers native approvals only for phone-owned turns",
+    name: "allows full access after an informational warning and answers native approvals only for phone-owned turns",
     async run() {
       const workingDirectory = os.tmpdir();
       const harness = transportHarness({ loadedThreads: [] });
       const bridge = new CodexAppServerBridge({ transportFactory: harness.transportFactory, reconnect: false, loadedThreadRefreshMs: 0 });
       try {
         await bridge.start();
-        await assert.rejects(bridge.createSession({
+        const fullAccess = await bridge.createSession({
           text: "Unconfirmed full access",
           cwd: workingDirectory,
           permissionProfile: "danger-full-access",
           clientMessageId: "phone-full-access-denied-0001",
-        }), (error) => error.statusCode === 400);
+        });
+        assert.equal(fullAccess.permissionProfile, "danger-full-access");
         const command = await bridge.createSession({
           text: "Ask before escalation",
           cwd: workingDirectory,
