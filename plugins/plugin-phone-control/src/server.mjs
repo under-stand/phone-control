@@ -562,7 +562,7 @@ export async function createPhoneControlServer({
           const message = String(error?.message || "Instruction delivery failed");
           const transient = error?.statusCode !== 404 && (error?.statusCode === 503
             || /unavailable|not ready|not attached|handed off|desktop|transport|connection|resume|active turn|question|approval/i.test(message));
-          const mismatch = Boolean(entry.expectedTurnId) && /turn changed|unexpected turn|active turn/i.test(message);
+          const mismatch = Boolean(entry.expectedTurnId) && /session is now idle|turn changed|unexpected turn|active turn/i.test(message);
           if (mismatch) {
             await outbox.update(entry.id, { status: "needs_review", waitingFor: null, lastError: "The Codex turn changed while this instruction was waiting" });
           } else if (transient) {

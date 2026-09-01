@@ -1274,6 +1274,21 @@ export const tests = [
         assert.equal(bridge.commands.get("phone-queued-api-0001").text, "继续检查测试结果");
         const after = await request({ port: started.port, pathname: "/api/sessions/thread-outbox/queued-commands", headers: { cookie } });
         assert.equal(after.body.queued[0].status, "delivered");
+        const stale = await request({
+          port: started.port,
+          pathname: "/api/sessions/thread-outbox/queue",
+          method: "POST",
+          headers: { cookie, "x-phone-control-client": "1" },
+          body: { text: "不要误发到变化的 turn", expectedTurnId: "turn-old", clientMessageId: "phone-queued-api-0002" },
+        });
+        assert.equal(stale.status, 202);
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          const current = await request({ port: started.port, pathname: "/api/sessions/thread-outbox/queued-commands", headers: { cookie } });
+          if (current.body.queued.find((entry) => entry.id === "phone-queued-api-0002")?.status === "needs_review") break;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        const staleList = await request({ port: started.port, pathname: "/api/sessions/thread-outbox/queued-commands", headers: { cookie } });
+        assert.equal(staleList.body.queued.find((entry) => entry.id === "phone-queued-api-0002").status, "needs_review");
       } finally {
         await runtime.close();
         await rm(dataDir, { recursive: true, force: true });
