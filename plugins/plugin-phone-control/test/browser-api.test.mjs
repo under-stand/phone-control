@@ -74,7 +74,7 @@ export const tests = [{
         pathname: "/api/internal/browser/hello",
         method: "POST",
         headers: EXTENSION_HEADERS,
-        body: { clientId: "chrome-test", version: "0.1.0" },
+        body: { clientId: "chrome-test", version: "0.2.0" },
       });
       assert.equal(hello.status, 200);
       assert.equal(hello.body.connected, true);

@@ -6,5 +6,9 @@ main { padding: 20px; }
 .status.online span { background: #35d07f; box-shadow: 0 0 0 4px #35d07f22; }
 h1 { margin: 14px 0 8px; font-size: 22px; }
 p { margin: 0 0 16px; color: #aebbd0; }
+.service-label { display: block; margin-top: 16px; color: #aebbd0; font-size: 12px; }
+.service-label input { display: block; box-sizing: border-box; width: 100%; margin-top: 6px; border: 1px solid #33435e; border-radius: 8px; padding: 9px 10px; background: #0b1220; color: #edf3ff; font: inherit; }
 button { width: 100%; border: 0; border-radius: 10px; padding: 10px 12px; background: #2c6bed; color: white; font: inherit; font-weight: 700; cursor: pointer; }
+button.secondary { margin-top: 8px; background: #223451; }
+button:disabled { opacity: .65; cursor: wait; }
 small { display: block; margin-top: 12px; color: #71809a; text-align: center; }

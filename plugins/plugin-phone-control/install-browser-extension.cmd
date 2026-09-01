@@ -16,6 +16,8 @@ if not exist "%CHROME_EXE%" set "CHROME_EXE=%LocalAppData%\Google\Chrome\Applica
 echo 1. Turn on Developer mode in the Chrome extensions page.
 echo 2. Click Load unpacked.
 echo 3. Select the extensions\chrome folder opened in Explorer.
+echo 4. The bridge will auto-discover Phone Control on 127.0.0.1 ports 8787-8807.
+echo    For a custom port, enter the full loopback URL in the extension popup.
 echo.
 start "" explorer.exe /select,"%EXTENSION_DIR%\manifest.json"
 if exist "%CHROME_EXE%" (

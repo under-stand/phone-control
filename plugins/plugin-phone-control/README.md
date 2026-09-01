@@ -167,7 +167,8 @@ node ./bin/phone-control.mjs service install \
 node ./bin/phone-control.mjs service status
 ```
 
-服务默认只监听 `127.0.0.1:8787`。Linux 会优先使用 systemd user service，macOS 使用
+服务默认只监听 `127.0.0.1:8787`；Windows 安装器如遇端口占用会选择附近端口，Chrome Bridge 会自动探测该范围。
+Linux 会优先使用 systemd user service，macOS 使用
 原生 `launchd`，其他不支持 systemd 的 Unix 环境自动使用独立的 tmux 会话和 `@reboot` crontab。
 
 `service install` 会固定当前 Node 和插件路径。升级 Node 或移动项目后，需要重新执行一次该命令。
@@ -245,8 +246,9 @@ node ./bin/phone-control.mjs share
 
 ### 可选：从手机控制电脑 Chrome
 
-浏览器控制是 `0.9.x` 的可选能力，当前要求 Phone Control 使用默认的本机地址
-`http://127.0.0.1:8787`，并在电脑 Chrome 中手工加载一次随项目提供的扩展。
+浏览器控制是可选能力，并在电脑 Chrome 中手工加载一次随项目提供的扩展。扩展会先检查已保存的服务地址，
+再自动探测安装器可能选择的 `127.0.0.1:8787` 至 `127.0.0.1:8807`；因此当默认端口被占用、服务自动切换到相邻端口时，
+不需要修改扩展代码。若你手工使用其他端口，可以在扩展弹窗中填写服务地址，留空即可恢复自动发现。
 
 Windows 可以在插件目录中双击 `install-browser-extension.cmd`。一键安装后的稳定目录通常是：
 
@@ -392,7 +394,7 @@ node ./bin/phone-control.mjs service install \
 | 后台回来后显示断线 | 点击顶栏连接状态立即探测；页面会同时重建 SSE |
 | 收不到系统通知 | 确认使用 HTTPS，并以“开启提醒”时的测试通知为准 |
 | 新版本没有生效 | 重新执行 `codex plugin add`、`service install`，然后新建 thread |
-| 手机“浏览器”页显示扩展离线 | 确认最新 Phone Control `0.9.x` 正在默认端口 8787 运行；在 Chrome 扩展页重新加载 Browser Bridge，再点扩展里的“重新连接”。普通网页不能代替扩展调用本机内部接口 |
+| 手机“浏览器”页显示扩展离线 | 在 Chrome 扩展页重新加载 Browser Bridge，再点扩展里的“重新连接”；扩展会自动探测 `127.0.0.1:8787-8807`。若服务使用其他端口，可在扩展弹窗填写完整的 `http://127.0.0.1:端口` 地址。普通网页不能代替扩展调用本机内部接口 |
 | 浏览器页提示另一台设备正在控制 | 关闭另一台手机上的浏览器控制页，或等待最多 60 秒租约过期；撤销那台设备也会立即释放租约 |
 
 中国大陆网络下，浏览器系统推送可能依赖 Google/Firebase 等厂商通道。Tailscale 或 VPS 只负责
@@ -406,7 +408,7 @@ node ./bin/phone-control.mjs service install \
 - 回答、追加、停止和审批都必须匹配服务端验证的 thread、turn 和单次请求。
 - “移交电脑 / 手机接管”只对 Desktop 来源的用户会话开放；移交要求受管 stdio 中所有 thread 空闲且无待处理问题/审批，接管则先只读检查，再恢复并验证为空闲。共享进程中的其他会话会被短暂释放，但不会标记为已移交；CLI 不进入该流程。
 - 图片会在浏览器端缩放并移除元数据，服务端只保留不可复用的短期临时文件。
-- Chrome Bridge 只连接 `127.0.0.1:8787`，服务端校验并绑定扩展来源；手机仍必须先配对。网页截图只保存在内存，不写入事件日志，输入正文也不会进入 Phone Control 审计。
+- Chrome Bridge 只连接本机回环地址（默认探测 `127.0.0.1:8787-8807`，也可在扩展弹窗指定其他回环端口），服务端校验并绑定扩展来源；手机仍必须先配对。网页截图只保存在内存，不写入事件日志，输入正文也不会进入 Phone Control 审计。
 - 删除会话会删除 Codex 原始记录且不可恢复，页面会在执行前明确确认风险。
 
 更完整的边界说明见 [SECURITY.md](SECURITY.md)，实现设计见

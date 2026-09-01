@@ -12,7 +12,9 @@
       <h1>浏览器遥控</h1>
       <p id="detail">扩展会连接本机 Phone Control，网页画面只通过你自己的电脑传输。</p>
       <button id="reconnect" type="button">重新连接</button>
-      <small id="service">127.0.0.1:8787</small>
+      <label class="service-label" for="service-url">服务地址 <input id="service-url" type="text" inputmode="url" autocomplete="off" placeholder="留空自动发现"></label>
+      <button id="save-service-url" class="secondary" type="button">保存并连接</button>
+      <small id="service">自动发现 127.0.0.1:8787-8807</small>
     </main>
     <script src="popup.js" type="module"></script>
   </body>

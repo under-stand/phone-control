@@ -1,4 +1,11 @@
-const DEFAULT_SERVICE_URL = "http://127.0.0.1:8787";
+import {
+  DEFAULT_SERVICE_PORT,
+  discoverServiceUrl,
+  normalizeServiceUrl,
+} from "./service-discovery.js";
+
+const DEFAULT_SERVICE_URL = `http://127.0.0.1:${DEFAULT_SERVICE_PORT}`;
+const SERVICE_DISCOVERY_RETRY_MS = 3_000;
 const EXTENSION_HEADER = { "x-phone-control-browser-extension": "1" };
 const attachedTabs = new Set();
 const pageGenerations = new Map();
@@ -7,39 +14,87 @@ let running = false;
 let selectedTabId = null;
 let lastFrame = null;
 let connection = { connected: false, error: null, lastSeenAt: null };
+let activeServiceUrl = null;
+let discoveryPromise = null;
+let lastDiscoveryAt = 0;
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-async function settings() {
+async function resolveServiceUrl({ configuredServiceUrl = null, force = false } = {}) {
+  const fallback = activeServiceUrl || configuredServiceUrl || DEFAULT_SERVICE_URL;
+  const now = Date.now();
+  if (!force && activeServiceUrl) return activeServiceUrl;
+  if (force && activeServiceUrl && now - lastDiscoveryAt < SERVICE_DISCOVERY_RETRY_MS) return activeServiceUrl;
+  if (discoveryPromise) return discoveryPromise;
+
+  lastDiscoveryAt = now;
+  discoveryPromise = discoverServiceUrl({ configuredServiceUrl })
+    .then(async (discovered) => {
+      activeServiceUrl = discovered || fallback;
+      if (discovered) await chrome.storage.local.set({ serviceUrl: discovered });
+      return activeServiceUrl;
+    })
+    .finally(() => {
+      discoveryPromise = null;
+    });
+  return discoveryPromise;
+}
+
+async function settings({ forceServiceDiscovery = false } = {}) {
   const stored = await chrome.storage.local.get(["clientId", "serviceUrl", "selectedTabId"]);
   if (!stored.clientId) {
     stored.clientId = crypto.randomUUID();
     await chrome.storage.local.set({ clientId: stored.clientId });
   }
   selectedTabId = Number.isInteger(stored.selectedTabId) ? stored.selectedTabId : selectedTabId;
+  const configuredServiceUrl = normalizeServiceUrl(stored.serviceUrl);
   return {
     clientId: stored.clientId,
-    serviceUrl: String(stored.serviceUrl || DEFAULT_SERVICE_URL).replace(/\/$/, ""),
+    serviceUrl: await resolveServiceUrl({ configuredServiceUrl, force: forceServiceDiscovery }),
   };
 }
 
 async function request(pathname, { method = "GET", body = null, timeoutMs = 25_000 } = {}) {
   const config = await settings();
+  try {
+    return await requestAgainstService(config.serviceUrl, pathname, { method, body, timeoutMs });
+  } catch (error) {
+    if (!["service_endpoint_invalid", "service_unreachable"].includes(error?.code)) throw error;
+    const rediscovered = await settings({ forceServiceDiscovery: true });
+    if (rediscovered.serviceUrl && rediscovered.serviceUrl !== config.serviceUrl) {
+      return requestAgainstService(rediscovered.serviceUrl, pathname, { method, body, timeoutMs });
+    }
+    throw error;
+  }
+}
+
+async function requestAgainstService(serviceUrl, pathname, { method = "GET", body = null, timeoutMs = 25_000 } = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${config.serviceUrl}${pathname}`, {
-      method,
-      headers: {
-        ...EXTENSION_HEADER,
-        ...(body == null ? {} : { "content-type": "application/json" }),
-      },
-      body: body == null ? null : JSON.stringify(body),
-      cache: "no-store",
-      signal: controller.signal,
-    });
+    let response;
+    try {
+      response = await fetch(`${serviceUrl}${pathname}`, {
+        method,
+        headers: {
+          ...EXTENSION_HEADER,
+          ...(body == null ? {} : { "content-type": "application/json" }),
+        },
+        body: body == null ? null : JSON.stringify(body),
+        cache: "no-store",
+        signal: controller.signal,
+      });
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      failure.code = "service_unreachable";
+      throw failure;
+    }
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || `Phone Control returned ${response.status}`);
+    if (!response.ok) {
+      const error = new Error(payload.error || `Phone Control returned ${response.status}`);
+      if (response.status === 404) error.code = "service_endpoint_invalid";
+      throw error;
+    }
     return payload;
   } finally {
     clearTimeout(timeout);
@@ -378,6 +433,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "reconnect") {
     connection.connected = false;
     hello().then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+  if (message?.type === "set-service-url") {
+    (async () => {
+      const raw = String(message.serviceUrl || "").trim();
+      const serviceUrl = raw ? normalizeServiceUrl(raw) : null;
+      if (raw && !serviceUrl) throw new Error("请输入 http://127.0.0.1:端口，或留空使用自动发现");
+      activeServiceUrl = serviceUrl;
+      lastDiscoveryAt = 0;
+      if (serviceUrl) await chrome.storage.local.set({ serviceUrl });
+      else await chrome.storage.local.remove("serviceUrl");
+      connection = { connected: false, error: null, lastSeenAt: null };
+      return { ok: true, serviceUrl: serviceUrl || "自动发现" };
+    })().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
   return false;
