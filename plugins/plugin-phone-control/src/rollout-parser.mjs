@@ -74,6 +74,7 @@ function permissionModeFromSettings(settings) {
   const value = `${activeId} ${sandbox} ${profileType}`;
   if (value.includes("read-only") || value.includes("readonly")) return "read-only";
   if (value.includes("danger-full-access") || value.includes("dangerfullaccess")) return "danger-full-access";
+  if (value.includes("workspace-write-network") || value.includes("workspacewritenetwork")) return "workspace-write-network";
   if (networkAccess && (value.includes("workspace-write") || value.includes("workspacewrite"))) return "workspace-write-network";
   if (value.includes("workspace-write") || value.includes("workspacewrite")) return "workspace-write";
   return null;
