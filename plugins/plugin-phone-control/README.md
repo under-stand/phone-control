@@ -260,7 +260,7 @@ Windows 可以在插件目录中双击 `install-browser-extension.cmd`。一键�
 2. 打开右上角“开发者模式”；
 3. 点“加载已解压的扩展程序”，选择 `plugins/plugin-phone-control/extensions/chrome`；
 4. 打开一个普通 `http://` 或 `https://` 网页，点扩展图标确认显示“已连接 Phone Control”；
-5. 在手机 Phone Control 顶栏点“浏览器”。
+5. 在手机 Phone Control 顶栏点“浏览器”。电脑端切换标签页、导航或刷新完成后，扩展会自动把最新标签和画面同步到手机；手机端仍可直接点按、滑动和输入。
 
 Chrome 会显示调试器正在控制标签页，这是扩展使用 Chrome DevTools Protocol 实现截图、点按和
 输入时的正常安全提示。`chrome://`、扩展页和本地 `file://` 页面不会开放给手机。一个时刻只有一台

@@ -2,6 +2,7 @@ const DEFAULT_SERVICE_URL = "http://127.0.0.1:8787";
 const EXTENSION_HEADER = { "x-phone-control-browser-extension": "1" };
 const attachedTabs = new Set();
 const pageGenerations = new Map();
+const captureTimers = new Map();
 let running = false;
 let selectedTabId = null;
 let lastFrame = null;
@@ -134,6 +135,34 @@ async function snapshot({ includeFrame = true } = {}) {
   };
 }
 
+async function publishSnapshot({ includeFrame = true } = {}) {
+  const config = await settings();
+  await request("/api/internal/browser/snapshot", {
+    method: "POST",
+    body: { clientId: config.clientId, snapshot: await snapshot({ includeFrame }) },
+    timeoutMs: 10_000,
+  });
+}
+
+function scheduleCapture(tabId, { includeFrame = true } = {}) {
+  const previous = captureTimers.get(tabId);
+  if (previous) clearTimeout(previous);
+  const timer = setTimeout(async () => {
+    captureTimers.delete(tabId);
+    if (tabId !== selectedTabId) return;
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (!supportedTab(tab)) return;
+      if (includeFrame) await capture(tab);
+      await publishSnapshot({ includeFrame });
+    } catch {
+      // The tab may have closed or navigated to a protected Chrome page.
+      // The regular heartbeat will report the next healthy snapshot.
+    }
+  }, 350);
+  captureTimers.set(tabId, timer);
+}
+
 async function activateTab(tabId) {
   const numericId = Number(tabId);
   const tab = await chrome.tabs.get(numericId);
@@ -246,6 +275,7 @@ async function hello() {
   });
   connection = { connected: true, error: null, lastSeenAt: new Date().toISOString() };
   await chrome.storage.local.set({ connection });
+  if (selectedTabId != null) scheduleCapture(selectedTabId);
 }
 
 async function postResult(clientId, commandId, outcome) {
@@ -290,20 +320,50 @@ async function runLoop() {
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === "loading") {
     pageGenerations.set(tabId, (pageGenerations.get(tabId) || 0) + 1);
-    if (tabId === selectedTabId) lastFrame = null;
+    if (tabId === selectedTabId) {
+      lastFrame = null;
+      void publishSnapshot({ includeFrame: false }).catch(() => {});
+    }
+  }
+  if (changeInfo.status === "complete" && tabId === selectedTabId) {
+    scheduleCapture(tabId);
   }
 });
 
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  if (!Number.isInteger(tabId)) return;
+  selectedTabId = tabId;
+  lastFrame = null;
+  void chrome.storage.local.set({ selectedTabId });
+  void publishSnapshot({ includeFrame: false }).catch(() => {});
+  scheduleCapture(tabId);
+});
+
 chrome.tabs.onRemoved.addListener((tabId) => {
+  const timer = captureTimers.get(tabId);
+  if (timer) clearTimeout(timer);
+  captureTimers.delete(tabId);
   attachedTabs.delete(tabId);
   pageGenerations.delete(tabId);
   if (tabId === selectedTabId) {
     selectedTabId = null;
     lastFrame = null;
+    void chooseTab()
+      .then((tab) => {
+        selectedTabId = tab.id;
+        return chrome.storage.local.set({ selectedTabId }).then(() => scheduleCapture(tab.id));
+      })
+      .catch(() => publishSnapshot({ includeFrame: false }).catch(() => {}));
   }
 });
 
-chrome.debugger.onDetach.addListener((source) => attachedTabs.delete(source.tabId));
+chrome.debugger.onDetach.addListener((source) => {
+  attachedTabs.delete(source.tabId);
+  if (source.tabId === selectedTabId) {
+    lastFrame = null;
+    void publishSnapshot({ includeFrame: false }).catch(() => {});
+  }
+});
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "status") {

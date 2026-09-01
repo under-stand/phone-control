@@ -880,6 +880,25 @@ export async function createPhoneControlServer({
         return;
       }
 
+      if (request.method === "POST" && url.pathname === "/api/internal/browser/snapshot") {
+        if (!isBrowserExtensionRequest(request)) {
+          json(response, 403, { error: "Browser extension snapshots are local-only" });
+          return;
+        }
+        const body = await readJson(request, MAX_BROWSER_BODY);
+        if (!body || typeof body.snapshot !== "object" || Array.isArray(body.snapshot)) {
+          json(response, 400, { error: "Invalid browser snapshot" });
+          return;
+        }
+        const snapshot = browser.updateSnapshot(
+          body.clientId,
+          browserExtensionOrigin(request),
+          body.snapshot,
+        );
+        json(response, 202, { ok: true, browser: snapshot });
+        return;
+      }
+
       if (request.method === "GET" && url.pathname === "/api/internal/browser/commands") {
         if (!isBrowserExtensionRequest(request)) {
           json(response, 403, { error: "Browser extension polling is local-only" });

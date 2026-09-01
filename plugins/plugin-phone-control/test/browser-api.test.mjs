@@ -79,6 +79,23 @@ export const tests = [{
       assert.equal(hello.status, 200);
       assert.equal(hello.body.connected, true);
 
+      const pushedSnapshot = await request({
+        port: started.port,
+        pathname: "/api/internal/browser/snapshot",
+        method: "POST",
+        headers: EXTENSION_HEADERS,
+        body: {
+          clientId: "chrome-test",
+          snapshot: {
+            tabs: [{ id: "7", title: "Example", url: "https://example.com/", supported: true }],
+            activeTabId: "7",
+            frame: null,
+          },
+        },
+      });
+      assert.equal(pushedSnapshot.status, 202);
+      assert.equal(pushedSnapshot.body.browser.activeTabId, "7");
+
       const pairing = await request({ port: started.port, pathname: "/?token=test-token" });
       const cookie = pairing.headers["set-cookie"][0].split(";")[0];
       const browserPage = await request({ port: started.port, pathname: "/browser.html", headers: { cookie } });
