@@ -174,6 +174,7 @@ function newSession(event) {
     turnId: event.turnId || null,
     transcriptPath: event.transcriptPath || null,
     parentThreadId: event.parentThreadId || null,
+    branchOf: event.branchOf || null,
     threadSource: event.threadSource || null,
     agentRole: event.agentRole || null,
     permissionMode: event.permissionMode || null,
@@ -266,6 +267,7 @@ function applyEvent(session, event) {
   session.permissionMode = event.permissionMode || session.permissionMode;
   session.approvalPolicy = event.approvalPolicy || session.approvalPolicy;
   if (event.parentThreadId) session.parentThreadId = event.parentThreadId;
+  if (event.branchOf) session.branchOf = event.branchOf;
   if (event.threadSource) session.threadSource = event.threadSource;
   if (event.agentRole) session.agentRole = event.agentRole;
   if (event.surface && event.surface !== "Unknown") session.surface = event.surface;
@@ -848,8 +850,9 @@ export class SessionStore extends EventEmitter {
   list({ taskKind = null } = {}) {
     const childCounts = new Map();
     for (const session of this.sessions.values()) {
-      if (!session.parentThreadId) continue;
-      childCounts.set(session.parentThreadId, (childCounts.get(session.parentThreadId) || 0) + 1);
+      const parentId = session.parentThreadId || session.branchOf;
+      if (!parentId) continue;
+      childCounts.set(parentId, (childCounts.get(parentId) || 0) + 1);
     }
     const summaries = Array.from(this.sessions.values())
       .filter((session) => !taskKind || sessionTaskKind(session) === taskKind)

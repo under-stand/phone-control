@@ -9,8 +9,8 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=64";
-import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=64";
+} from "./lib/format.js?v=65";
+import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=65";
 
 function storedCompletionKeys() {
   try {
@@ -1270,6 +1270,22 @@ function connectStream() {
       queueDetailRefresh(session.id, { urgent });
     }
   });
+  stream.addEventListener("outbox", (event) => {
+    if (generation !== state.streamGeneration) return;
+    markStreamAlive();
+    const queued = JSON.parse(event.data);
+    const session = state.sessions.get(queued?.sessionId);
+    if (!session || !queued?.id) return;
+    const current = Array.isArray(session.queuedCommands) ? session.queuedCommands.filter((entry) => entry.id !== queued.id) : [];
+    if (!["delivered", "failed", "needs_review", "canceled", "expired"].includes(queued.status)) current.push(queued);
+    current.sort((left, right) => String(left.createdAt || "").localeCompare(String(right.createdAt || "")));
+    const updated = { ...session, queuedCommands: current };
+    state.sessions.set(session.id, updated);
+    if (state.detailSessions.has(session.id)) state.detailSessions.set(session.id, { ...state.detailSessions.get(session.id), queuedCommands: current });
+    state.sessionsMutationRevision += 1;
+    scheduleRender();
+    if (elements.detail.open && elements.detail.dataset.sessionId === session.id) rerenderCachedDetail(session.id);
+  });
   stream.addEventListener("session_removed", (event) => {
     if (generation !== state.streamGeneration) return;
     markStreamAlive();
@@ -2016,7 +2032,9 @@ function closeRuntimeSettings() {
 
 function composerPanel(session) {
   const control = session.control;
-  if (!control?.canSend || !control.action) return "";
+  const queueable = isUserTask(session) && !control?.canSend && !control?.canAnswer && !control?.canApprove;
+  const action = control?.canSend && control.action ? control.action : queueable ? "queue" : null;
+  if (!action) return "";
   const labels = {
     steer: {
       eyebrow: "STEER ACTIVE TURN",
@@ -2042,9 +2060,20 @@ function composerPanel(session) {
       placeholder: "恢复并继续这个会话…",
       note: "先恢复本机 thread；可为新一轮调整模型。",
     },
+    queue: {
+      eyebrow: "QUEUE PHONE INSTRUCTION",
+      context: "连接恢复后",
+      title: "排队发送",
+      button: "排队发送",
+      placeholder: "先记下来，连接恢复后发送…",
+      note: "会等待 Codex 连接或电脑释放后再尝试；turn 变化时会要求你确认。",
+    },
   };
-  const copy = labels[control.action];
+  const copy = labels[action];
   if (!copy) return "";
+  const expectedTurnId = action === "queue" && ["working", "waiting"].includes(session.status)
+    ? control?.expectedTurnId || session.turnId || ""
+    : control?.expectedTurnId || "";
   const draft = state.drafts.get(session.id) || "";
   const attachments = state.attachments.get(session.id) || [];
   if (!state.expandedComposers.has(session.id)) {
@@ -2057,14 +2086,14 @@ function composerPanel(session) {
     </section>`;
   }
   return `
-    <form class="session-composer" data-session-command="${escapeHtml(session.id)}" data-expected-turn-id="${escapeHtml(control.expectedTurnId || "")}" data-control-action="${escapeHtml(control.action)}">
+    <form class="session-composer" data-session-command="${escapeHtml(session.id)}" data-expected-turn-id="${escapeHtml(expectedTurnId)}" data-control-action="${escapeHtml(action)}">
       <div class="composer-surface">
         <button class="composer-collapse" type="button" data-collapse-composer="${escapeHtml(session.id)}" aria-label="收起输入框"><img src="/icons/x.svg" alt=""></button>
         <textarea data-session-input maxlength="4000" rows="2" placeholder="${copy.placeholder}">${escapeHtml(draft)}</textarea>
         <div class="attachment-strip" data-attachment-strip>${attachmentMarkup(attachments)}</div>
         <div class="composer-submit-dock">
-          <label class="attach-button" aria-label="添加图片" title="添加图片"><img src="/icons/image.svg" alt=""><span>图片</span><input data-image-input type="file" accept="image/jpeg,image/png,image/webp" multiple></label>
-          ${composerModelSettings(session, control.action)}
+          <label class="attach-button${action === "queue" ? " is-disabled" : ""}" aria-label="${action === "queue" ? "排队发送暂不支持图片" : "添加图片"}" title="${action === "queue" ? "排队发送暂不支持图片" : "添加图片"}"><img src="/icons/image.svg" alt=""><span>图片</span><input data-image-input type="file" accept="image/jpeg,image/png,image/webp" multiple${action === "queue" ? " disabled" : ""}></label>
+          ${composerModelSettings(session, action)}
           <span class="composer-input-count${draft.length ? "" : " is-empty"}" data-input-count>${draft.length}/4000</span>
           <button class="command-submit" type="submit" aria-label="${copy.button}" title="${copy.button}"><img src="/icons/paper-plane-tilt.svg" alt=""><span class="sr-only" data-command-label>${copy.button}</span></button>
         </div>
@@ -2098,6 +2127,29 @@ function isExternallyOwned(session) {
   return /another Codex runtime|active writer|observe-only/i.test(reason);
 }
 
+function queuedCommandsMarkup(session) {
+  const queued = Array.isArray(session.queuedCommands) ? session.queuedCommands : [];
+  if (!queued.length) return "";
+  const labels = {
+    queued: "已排队",
+    waiting: "等待条件",
+    sending: "正在发送",
+    delivered: "已送达",
+    failed: "发送失败",
+    needs_review: "需要确认",
+    canceled: "已取消",
+    expired: "已过期",
+  };
+  return `<section class="queued-commands" aria-label="排队中的手机指令">
+    <div class="queued-commands-heading"><b>手机续作队列</b><small>连接恢复或电脑释放后会自动尝试</small></div>
+    ${queued.map((entry) => `<article class="queued-command is-${escapeHtml(entry.status)}">
+      <div><span class="queued-command-status">${escapeHtml(labels[entry.status] || entry.status)}</span>${entry.waitingFor ? `<small>${escapeHtml(entry.waitingFor === "desktop" ? "等待电脑释放" : entry.waitingFor === "turn" ? "等待当前轮次结束" : entry.waitingFor === "bridge" ? "等待 Codex 连接" : entry.waitingFor === "question" ? "等待问题处理" : entry.waitingFor === "approval" ? "等待审批处理" : "等待会话恢复")}</small>` : ""}</div>
+      <p>${escapeHtml(entry.preview || "")}</p>
+      ${["queued", "waiting", "sending"].includes(entry.status) ? `<button type="button" data-cancel-queued="${escapeHtml(entry.id)}">取消</button>` : entry.status === "needs_review" ? `<small>${escapeHtml(entry.lastError || "请刷新后决定是否重新发送")}</small>` : entry.lastError ? `<small>${escapeHtml(entry.lastError)}</small>` : ""}
+    </article>`).join("")}
+  </section>`;
+}
+
 function controlChannelLabel(session) {
   if (sessionDisplayStatus(session) === "disconnected") return "连接已中断 · 只读";
   if (session.control?.handedOff) return "已移交电脑 · 手机只读";
@@ -2107,6 +2159,7 @@ function controlChannelLabel(session) {
   if (session.control?.action === "steer") return "可追加指令";
   if (session.control?.action === "start") return "可继续会话";
   if (session.control?.action === "resume") return "可恢复会话";
+  if (isUserTask(session) && !session.control?.canSend && !session.control?.canAnswer && !session.control?.canApprove) return "可排队续作";
   if (session.control?.reason?.startsWith("A stop request was delivered")) return "正在停止";
   if (session.control?.reason?.startsWith("Live control unavailable:")) return "控制已隔离 · 只读";
   if (!session.control?.live && session.liveness === "recent" && ["working", "waiting"].includes(session.status)) return "正在恢复连接";
@@ -2125,6 +2178,7 @@ function controlExplanation(session) {
   if (session.control?.action === "steer") return "手机指令会追加到当前正在执行的 turn；发送前会再次校验。";
   if (session.control?.action === "start") return "这个 thread 当前空闲，可以直接开始下一轮。";
   if (session.control?.action === "resume") return "Phone Control 会先恢复本机 thread，再开始下一轮。";
+  if (isUserTask(session) && !session.control?.canSend && !session.control?.canAnswer && !session.control?.canApprove) return "当前无法安全直发，但可以先把指令排入手机续作队列。连接恢复、电脑释放且 turn 状态重新验证后，系统才会发送；如果原 turn 已变化，会停在“需要确认”，不会误发。";
   if (session.control?.reason?.startsWith("A stop request was delivered")) return "停止请求已送达 Codex，正在等待当前 turn 确认结束。会话仍会保留。";
   if (session.control?.reason?.startsWith("Live control unavailable:")) return "Phone Control 已隔离这个会话的实时控制，避免异常大消息反复拖断其他会话；历史追踪仍可使用。重启服务后会重新验证。";
   if (session.control?.live) return "现场连接已验证，但当前状态暂不适合发送新指令。";
@@ -2197,6 +2251,7 @@ function renderDetails(session, { loading = false } = {}) {
           <span class="detail-project-context">${escapeHtml(projectName(session))} · ${escapeHtml(session.surface)}</span>
           <span class="detail-heading-actions">
             <button class="task-title-jump" type="button" data-open-task-title>命名</button>
+            ${session.taskKind === "user" ? `<button class="session-branch" type="button" data-branch-session="${escapeHtml(session.id)}" title="带着当前历史开一个可独立继续的新会话">分叉继续</button>` : ""}
             ${session.control?.canHandoff ? `<button class="session-handoff" type="button" data-handoff-session="${escapeHtml(session.id)}" title="释放 Phone Control 的会话占用，让电脑端继续">移交电脑</button>` : ""}
             ${session.control?.canReclaim ? `<button class="session-reclaim" type="button" data-reclaim-session="${escapeHtml(session.id)}" title="确认电脑端已释放后，重新由手机控制">手机接管</button>` : ""}
             <button class="target-toggle${state.targetSessionId === session.id ? " active" : ""}" type="button" data-target-session-id="${escapeHtml(session.id)}" aria-label="${state.targetSessionId === session.id ? "取消追踪这个会话" : "追踪这个会话"}" aria-pressed="${state.targetSessionId === session.id}" title="${state.targetSessionId === session.id ? "取消目标追踪" : "固定到手机顶部并只提醒这个会话"}"><img src="/icons/crosshair-simple.svg" alt=""><b>${state.targetSessionId === session.id ? "已追踪" : "追踪"}</b></button>
@@ -2206,7 +2261,7 @@ function renderDetails(session, { loading = false } = {}) {
     </div>
     `);
   syncDetailContent({
-    control: showControlNotice ? `<div class="control-note${controlIsImportant ? "" : " is-compact"}"><b>${escapeHtml(controlChannelLabel(session))}</b><p>${escapeHtml(controlExplanation(session))}</p></div>` : "",
+    control: `${showControlNotice ? `<div class="control-note${controlIsImportant ? "" : " is-compact"}"><b>${escapeHtml(controlChannelLabel(session))}</b><p>${escapeHtml(controlExplanation(session))}</p></div>` : ""}${queuedCommandsMarkup(session)}`,
     conversationMarkup: loading ? `<div class="conversation-loading"><i></i><i></i><i></i></div>` : conversation(session.events, session),
     retention: session.historyTruncated ? `<p class="history-retention-note">较早的运行过程已压缩；提问和回复会优先保留。</p>` : "",
     technical: `<details class="technical-details"${technicalOpen ? " open" : ""}>
@@ -2456,12 +2511,17 @@ async function sendSessionInput(form) {
   const textarea = form.querySelector("[data-session-input]");
   const button = form.querySelector(".command-submit");
   const status = form.querySelector(".command-status");
+  const queue = form.dataset.controlAction === "queue";
   const text = textarea.value.trim();
   const attachments = state.attachments.get(sessionId) || [];
   const modelSelection = state.composerModelSelections.get(sessionId) || { model: "", reasoningEffort: "", serviceTier: "", cwd: "", permissionProfile: "" };
   if (!text && !attachments.length) {
     status.textContent = "请输入指令或添加图片";
     textarea.focus();
+    return;
+  }
+  if (queue && attachments.length) {
+    status.textContent = "排队发送目前只支持文字，请连接恢复后再添加图片";
     return;
   }
   const confirmDangerFullAccess = form.dataset.controlAction !== "steer" && modelSelection.permissionProfile === "danger-full-access"
@@ -2472,13 +2532,13 @@ async function sendSessionInput(form) {
   textarea.disabled = true;
   for (const control of form.querySelectorAll("input, select, .attach-button")) control.disabled = true;
   setCommandButtonLabel(button, "正在送达…", true);
-  status.textContent = attachments.length ? `正在安全上传 ${attachments.length} 张图片…` : form.dataset.controlAction === "resume" ? "正在恢复并校验 thread" : "正在校验当前 thread 和 turn";
+  status.textContent = queue ? "正在保存到手机续作队列…" : attachments.length ? `正在安全上传 ${attachments.length} 张图片…` : form.dataset.controlAction === "resume" ? "正在恢复并校验 thread" : "正在校验当前 thread 和 turn";
   const uploadedIds = [];
   try {
-    for (const attachment of attachments) {
+    if (!queue) for (const attachment of attachments) {
       uploadedIds.push(await uploadAttachment(sessionId, form.dataset.expectedTurnId || null, attachment));
     }
-    const payload = await request(`/api/sessions/${encodeURIComponent(sessionId)}/input`, {
+    const payload = await request(`/api/sessions/${encodeURIComponent(sessionId)}/${queue ? "queue" : "input"}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2501,8 +2561,13 @@ async function sendSessionInput(form) {
     clearAttachments(sessionId);
     state.detailDirtySessions.delete(sessionId);
     textarea.value = "";
-    status.textContent = payload.command.action === "steer" ? "已追加到当前 turn" : "新 turn 已开始";
-    toast(payload.command.action === "steer" ? "指令已追加到 Codex" : "Codex 已继续执行");
+    if (queue) {
+      status.textContent = "已排队，等待连接或电脑释放";
+      toast("指令已加入手机续作队列");
+    } else {
+      status.textContent = payload.command.action === "steer" ? "已追加到当前 turn" : "新 turn 已开始";
+      toast(payload.command.action === "steer" ? "指令已追加到 Codex" : "Codex 已继续执行");
+    }
     await refreshSessions();
     await showDetails(sessionId, { open: false });
   } catch (error) {
@@ -2513,13 +2578,52 @@ async function sendSessionInput(form) {
     const modelSelect = form.querySelector("[data-model-select]");
     const effortSelect = form.querySelector("[data-effort-select]");
     if (modelSelect && effortSelect && !modelSelect.value) effortSelect.disabled = true;
-    setCommandButtonLabel(button, form.dataset.controlAction === "steer" ? "追加" : form.dataset.controlAction === "resume" ? "恢复并开始" : "开始下一轮");
+    setCommandButtonLabel(button, form.dataset.controlAction === "steer" ? "追加" : form.dataset.controlAction === "resume" ? "恢复并开始" : form.dataset.controlAction === "queue" ? "排队发送" : "开始下一轮");
     status.textContent = error.message;
     toast(error.message);
     await refreshSessions();
     if (elements.detail.open && elements.detail.dataset.sessionId === sessionId) {
       await showDetails(sessionId, { open: false });
     }
+  }
+}
+
+async function cancelQueuedCommand(button) {
+  const id = button.dataset.cancelQueued;
+  if (!id) return;
+  button.disabled = true;
+  try {
+    await request(`/api/commands/${encodeURIComponent(id)}`, { method: "DELETE" });
+    toast("已取消排队指令");
+    await refreshSessions();
+    const sessionId = elements.detail.dataset.sessionId;
+    if (sessionId) await showDetails(sessionId, { open: false, preserveView: true });
+  } catch (error) {
+    button.disabled = false;
+    toast(error.message);
+  }
+}
+
+async function branchSession(button) {
+  const sessionId = button.dataset.branchSession;
+  if (!sessionId) return;
+  const text = window.prompt("基于当前会话创建新分支。请输入新分支的第一条指令：");
+  if (!text?.trim()) return;
+  button.disabled = true;
+  button.textContent = "正在分叉…";
+  try {
+    const payload = await request(`/api/sessions/${encodeURIComponent(sessionId)}/branch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: text.trim(), clientMessageId: clientMessageId() }),
+    });
+    toast("已创建分支会话");
+    await refreshSessions();
+    if (payload.command?.sessionId) await showDetails(payload.command.sessionId, { open: true });
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "分叉继续";
+    toast(error.message);
   }
 }
 
@@ -3355,6 +3459,16 @@ elements.detail.addEventListener("click", (event) => {
   const deleteButton = event.target.closest("[data-delete-session]");
   if (deleteButton) {
     void deleteSession(deleteButton);
+    return;
+  }
+  const branchButton = event.target.closest("[data-branch-session]");
+  if (branchButton) {
+    void branchSession(branchButton);
+    return;
+  }
+  const cancelQueued = event.target.closest("[data-cancel-queued]");
+  if (cancelQueued) {
+    void cancelQueuedCommand(cancelQueued);
     return;
   }
   const handoffButton = event.target.closest("[data-handoff-session]");

@@ -236,6 +236,14 @@ function normalizePhoneInput(value, images = []) {
   };
 }
 
+function normalizeBranchContext(value) {
+  if (value == null || value === "") return null;
+  if (typeof value !== "string") throw httpError("Branch context is invalid", 400);
+  const context = value.replace(/\r\n?/g, "\n").trim();
+  if (context.length > 12_000) throw httpError("Branch context is too large", 400);
+  return context || null;
+}
+
 function normalizeClientMessageId(value) {
   if (typeof value !== "string" || !/^[A-Za-z0-9_.:-]{8,100}$/.test(value)) {
     throw httpError("A valid client message id is required", 400);
@@ -1311,8 +1319,10 @@ export class CodexAppServerBridge extends EventEmitter {
     }
   }
 
-  async createSession({ text, cwd = null, model = null, reasoningEffort = null, serviceTier = null, permissionProfile = null, confirmDangerFullAccess = false, clientMessageId } = {}, device = null) {
+  async createSession({ text, context = null, branchOf = null, cwd = null, model = null, reasoningEffort = null, serviceTier = null, permissionProfile = null, confirmDangerFullAccess = false, clientMessageId } = {}, device = null) {
     const input = normalizePhoneInput(text);
+    const branchContext = normalizeBranchContext(context);
+    const branchSource = branchOf == null || branchOf === "" ? null : clampText(branchOf, 240);
     const workingDirectory = await validateWorkingDirectory(cwd);
     const commandId = normalizeClientMessageId(clientMessageId);
     if (this.commands.has(commandId)) throw httpError("This phone message was already submitted", 409);
@@ -1340,6 +1350,7 @@ export class CodexAppServerBridge extends EventEmitter {
       approvalPolicy: permissions?.approvalPolicy || defaults?.approvalPolicy || null,
       sentAt: new Date().toISOString(),
       decidedBy: device?.id || null,
+      branchOf: branchSource,
     };
     this.rememberCommand(command);
     this.auditCommand("phone_session_creating", command, { deviceName: device?.name || null });
@@ -1363,7 +1374,7 @@ export class CodexAppServerBridge extends EventEmitter {
       const result = await this.request("turn/start", {
         threadId,
         clientUserMessageId: commandId,
-        input: input.items,
+        input: [...(branchContext ? [{ type: "text", text: branchContext }] : []), ...input.items],
         ...(selection.model ? { model: selection.model } : {}),
         ...(selection.reasoningEffort ? { effort: selection.reasoningEffort } : {}),
         ...(selection.serviceTier ? { serviceTier: selection.serviceTier } : {}),

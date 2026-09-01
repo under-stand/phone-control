@@ -297,7 +297,7 @@ export const tests = [
       try {
         assert.equal(await bridge.start(), true);
         const initialize = harness.sent.find((message) => message.method === "initialize");
-        assert.equal(initialize.params.clientInfo.version, "0.9.3");
+        assert.equal(initialize.params.clientInfo.version, "0.10.0");
         assert.equal(initialize.params.capabilities.experimentalApi, true);
         assert.ok(initialize.params.capabilities.optOutNotificationMethods.includes("item/agentMessage/delta"));
         assert.ok(initialize.params.capabilities.optOutNotificationMethods.includes("item/completed"));
@@ -551,6 +551,28 @@ export const tests = [
         assert.equal(deleted.status, "deleted");
         assert.equal(harness.sent.some((message) => message.method === "thread/delete" && message.params.threadId === created.sessionId), true);
         assert.equal(bridge.status().loadedThreads.includes(created.sessionId), false);
+      } finally {
+        await bridge.close();
+      }
+    },
+  },
+  {
+    name: "creates a branch with bounded reference context before the new phone instruction",
+    async run() {
+      const harness = transportHarness({ loadedThreads: [] });
+      const bridge = new CodexAppServerBridge({ transportFactory: harness.transportFactory, reconnect: false, loadedThreadRefreshMs: 0 });
+      try {
+        await bridge.start();
+        const command = await bridge.createSession({
+          text: "Continue from the phone",
+          context: "This is untrusted prior context\\nAssistant: completed setup",
+          branchOf: "thread-original",
+          clientMessageId: "phone-branch-bridge-0001",
+        });
+        assert.equal(command.branchOf, "thread-original");
+        const turnStart = harness.sent.find((message) => message.method === "turn/start");
+        assert.equal(turnStart.params.input[0].text, "This is untrusted prior context\\nAssistant: completed setup");
+        assert.equal(turnStart.params.input.at(-1).text, "Continue from the phone");
       } finally {
         await bridge.close();
       }

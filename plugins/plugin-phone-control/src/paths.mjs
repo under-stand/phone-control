@@ -18,6 +18,7 @@ export function dataPaths(dataDir) {
     devices: path.join(dataDir, "devices.json"),
     taskTitles: path.join(dataDir, "task-titles.json"),
     push: path.join(dataDir, "push.json"),
+    outbox: path.join(dataDir, "outbox.json"),
     uploads: path.join(dataDir, "uploads"),
     eventLog: path.join(dataDir, "events.jsonl"),
     auditLog: path.join(dataDir, "audit.jsonl"),

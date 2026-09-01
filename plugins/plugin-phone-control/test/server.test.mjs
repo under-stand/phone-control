@@ -187,7 +187,7 @@ class TestAppServerBridge extends EventEmitter {
       deliveredAt: new Date().toISOString(),
       decidedBy: device.id,
     };
-    this.commands.set(command.id, { ...command, text: body.text });
+    this.commands.set(command.id, { ...command, text: body.text, context: body.context || null, branchOf: body.branchOf || null });
     this.threads.set(sessionId, { status: "active", activeFlags: [], activeTurnId: turnId });
     this.emit("command", command);
     this.emit("status", this.status());
@@ -417,13 +417,13 @@ export const tests = [
         const page = await request({ port: started.port, pathname: "/" });
         assert.equal(page.status, 200);
         assert.match(page.headers["content-security-policy"], /default-src 'self'/);
-        assert.match(page.body, /app\.js\?v=64/);
+        assert.match(page.body, /app\.js\?v=65/);
         assert.match(page.body, /id="task-title">任务</);
         assert.doesNotMatch(page.body, /id="metrics"|任务概览|会话列表/);
 
         const compressedAsset = await request({
           port: started.port,
-          pathname: "/app.js?v=64",
+          pathname: "/app.js?v=65",
           headers: { "accept-encoding": "gzip" },
         });
         assert.equal(compressedAsset.status, 200);
@@ -918,7 +918,7 @@ export const tests = [
         assert.equal(detail.body.session.control.canAnswer, true);
         const status = await request({ port: started.port, pathname: "/api/status", headers: { cookie } });
         assert.equal(status.status, 200);
-      assert.equal(status.body.version, "0.9.3");
+      assert.equal(status.body.version, "0.10.0");
         assert.equal(status.body.codexHome, undefined);
         assert.equal(status.body.device, undefined);
         assert.equal(status.body.appServer.threadStates, undefined);
@@ -1216,6 +1216,104 @@ export const tests = [
         assert.equal(bridge.deletions.has(sessionId), true);
         assert.equal((await request({ port: started.port, pathname: `/api/sessions/${sessionId}`, headers: { cookie } })).status, 404);
         assert.equal((await request({ port: started.port, pathname: "/api/target", headers: { cookie } })).body.sessionId, null);
+      } finally {
+        await runtime.close();
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: "queues a phone instruction while disconnected and delivers it after Codex recovers",
+    async run() {
+      const dataDir = await mkdtemp(path.join(os.tmpdir(), "phone-control-outbox-api-test-"));
+      const bridge = new TestAppServerBridge();
+      const runtime = await createPhoneControlServer({
+        config: { host: "127.0.0.1", port: 0, token: "test-token", dataDir, interactions: { enabled: true } },
+        scanRollouts: false,
+        appServerBridge: bridge,
+      });
+      try {
+        const started = await runtime.start();
+        const paired = await request({ port: started.port, pathname: "/?token=test-token" });
+        const cookie = paired.headers["set-cookie"][0].split(";", 1)[0];
+        runtime.store.ingest({
+          eventId: "outbox-source-prompt",
+          sessionId: "thread-outbox",
+          turnId: "turn-old",
+          kind: "user_prompt",
+          at: new Date(Date.now() - 2_000).toISOString(),
+          surface: "CLI",
+          message: { role: "user", text: "Prepare a queued continuation" },
+        });
+        runtime.store.ingest({
+          eventId: "outbox-source-complete",
+          sessionId: "thread-outbox",
+          turnId: "turn-old",
+          kind: "turn_complete",
+          at: new Date(Date.now() - 1_000).toISOString(),
+          transcriptPath: path.join(dataDir, "thread-outbox.jsonl"),
+        });
+        bridge.load("thread-outbox", { status: "idle", activeFlags: [], activeTurnId: null });
+        bridge.connected = false;
+        bridge.emit("status", bridge.status());
+        const queued = await request({
+          port: started.port,
+          pathname: "/api/sessions/thread-outbox/queue",
+          method: "POST",
+          headers: { cookie, "x-phone-control-client": "1" },
+          body: { text: "继续检查测试结果", clientMessageId: "phone-queued-api-0001" },
+        });
+        assert.equal(queued.status, 202);
+        assert.equal(queued.body.queued.status, "waiting");
+        assert.equal(queued.body.queued.waitingFor, "bridge");
+        const listed = await request({ port: started.port, pathname: "/api/sessions/thread-outbox/queued-commands", headers: { cookie } });
+        assert.equal(listed.body.queued.length, 1);
+        bridge.connected = true;
+        bridge.emit("status", bridge.status());
+        for (let attempt = 0; attempt < 20 && !bridge.commands.has("phone-queued-api-0001"); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+        assert.equal(bridge.commands.get("phone-queued-api-0001").text, "继续检查测试结果");
+        const after = await request({ port: started.port, pathname: "/api/sessions/thread-outbox/queued-commands", headers: { cookie } });
+        assert.equal(after.body.queued[0].status, "delivered");
+      } finally {
+        await runtime.close();
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: "branches a session with recent history context",
+    async run() {
+      const dataDir = await mkdtemp(path.join(os.tmpdir(), "phone-control-branch-api-test-"));
+      const bridge = new TestAppServerBridge();
+      const runtime = await createPhoneControlServer({
+        config: { host: "127.0.0.1", port: 0, token: "test-token", dataDir, interactions: { enabled: true } },
+        scanRollouts: false,
+        appServerBridge: bridge,
+      });
+      try {
+        const started = await runtime.start();
+        const paired = await request({ port: started.port, pathname: "/?token=test-token" });
+        const cookie = paired.headers["set-cookie"][0].split(";", 1)[0];
+        runtime.store.ingest({ eventId: "branch-user", sessionId: "thread-branch-source", turnId: "turn-1", kind: "user_prompt", at: new Date(Date.now() - 3_000).toISOString(), message: { role: "user", text: "Build the mobile flow" } });
+        runtime.store.ingest({ eventId: "branch-assistant", sessionId: "thread-branch-source", turnId: "turn-1", kind: "assistant_message", at: new Date(Date.now() - 2_000).toISOString(), message: { role: "assistant", text: "The flow is ready for review" } });
+        runtime.store.ingest({ eventId: "branch-complete", sessionId: "thread-branch-source", turnId: "turn-1", kind: "turn_complete", at: new Date(Date.now() - 1_000).toISOString() });
+        bridge.load("thread-branch-source", { status: "idle", activeFlags: [], activeTurnId: null });
+        const branched = await request({
+          port: started.port,
+          pathname: "/api/sessions/thread-branch-source/branch",
+          method: "POST",
+          headers: { cookie, "x-phone-control-client": "1" },
+          body: { text: "Now verify it on mobile", clientMessageId: "phone-branch-api-0001" },
+        });
+        assert.equal(branched.status, 201);
+        assert.equal(branched.body.sourceSessionId, "thread-branch-source");
+        const created = bridge.commands.get("phone-branch-api-0001");
+        assert.equal(created.branchOf, "thread-branch-source");
+        assert.match(created.context, /Build the mobile flow/);
+        const child = await request({ port: started.port, pathname: `/api/sessions/${branched.body.command.sessionId}`, headers: { cookie } });
+        assert.equal(child.body.session.branchOf, "thread-branch-source");
+        const source = await request({ port: started.port, pathname: "/api/sessions", headers: { cookie } });
+        assert.equal(source.body.sessions.find((session) => session.id === "thread-branch-source").childSessionCount, 1);
       } finally {
         await runtime.close();
         await rm(dataDir, { recursive: true, force: true });
