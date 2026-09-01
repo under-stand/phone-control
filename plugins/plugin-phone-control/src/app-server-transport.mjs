@@ -1,3 +1,5 @@
+import { access, readdir } from "node:fs/promises";
+import path from "node:path";
 import { spawn } from "node:child_process";
 import { connectUnixWebSocket } from "./unix-websocket.mjs";
 
@@ -12,6 +14,63 @@ function normalizedCommand(value) {
     throw new Error("Codex executable is invalid");
   }
   return command;
+}
+
+async function fileExists(filePath) {
+  return access(filePath).then(() => true).catch(() => false);
+}
+
+// Codex for Windows stores each update in a hash-named directory. The main
+// executable can remain in an older directory after an update while its
+// companion code-mode host is missing. Avoid spawning that incomplete bundle
+// for mobile takeover and queued continuations.
+export async function resolveCodexCommand(command = "codex", {
+  platform = process.platform,
+  environment = process.env,
+  exists = fileExists,
+  listDirectory = readdir,
+} = {}) {
+  const configured = normalizedCommand(command);
+  if (platform !== "win32") return configured;
+  const pathApi = path.win32;
+  if (!pathApi.isAbsolute(configured) || !/\.exe$/i.test(configured)) return configured;
+
+  const configuredDirectory = pathApi.dirname(configured);
+  if (await exists(pathApi.join(configuredDirectory, "codex-code-mode-host.exe"))) return configured;
+
+  const directories = [];
+  const seenDirectories = new Set();
+  const addDirectory = (value) => {
+    const directory = typeof value === "string" ? value.trim() : "";
+    if (!directory) return;
+    const key = directory.toLowerCase();
+    if (seenDirectories.has(key)) return;
+    seenDirectories.add(key);
+    directories.push(directory);
+  };
+  for (const directory of String(environment.Path ?? environment.PATH ?? "").split(pathApi.delimiter)) {
+    addDirectory(directory);
+  }
+  // Scheduled tasks may have a reduced PATH. Inspect sibling hash directories
+  // under the configured Codex bin directory as a fallback.
+  const binDirectory = pathApi.dirname(configuredDirectory);
+  try {
+    const entries = await listDirectory(binDirectory, { withFileTypes: true });
+    for (const entry of entries || []) {
+      if (entry?.isDirectory?.()) addDirectory(pathApi.join(binDirectory, entry.name));
+    }
+  } catch {
+    // Keep the original command so the existing diagnostic is surfaced.
+  }
+
+  for (const directory of directories) {
+    const candidate = pathApi.join(directory, "codex.exe");
+    if (candidate.toLowerCase() === configured.toLowerCase()) continue;
+    if (await exists(candidate) && await exists(pathApi.join(directory, "codex-code-mode-host.exe"))) {
+      return candidate;
+    }
+  }
+  return configured;
 }
 
 export function normalizeAppServerTransportMode(value, fallback = "auto") {
@@ -58,14 +117,15 @@ function createClosedPromise(child) {
   return closed;
 }
 
-export function spawnStdioAppServer({
+export async function spawnStdioAppServer({
   command = "codex",
   platform = process.platform,
   environment = process.env,
   spawnProcess = spawn,
   startTimeoutMs = START_TIMEOUT_MS,
 } = {}) {
-  const spec = appServerSpawnSpec({ command, platform, environment });
+  const resolvedCommand = await resolveCodexCommand(command, { platform, environment });
+  const spec = appServerSpawnSpec({ command: resolvedCommand, platform, environment });
   const child = spawnProcess(spec.command, spec.args, {
     env: environment,
     windowsHide: true,
@@ -151,7 +211,7 @@ export async function createAppServerTransport({
   }
 }
 
-export function probeAppServerCommand({
+export async function probeAppServerCommand({
   command = "codex",
   platform = process.platform,
   environment = process.env,
@@ -160,9 +220,10 @@ export function probeAppServerCommand({
 } = {}) {
   let spec;
   try {
-    spec = appServerSpawnSpec({ command, args: ["app-server", "--help"], platform, environment });
+    const resolvedCommand = await resolveCodexCommand(command, { platform, environment });
+    spec = appServerSpawnSpec({ command: resolvedCommand, args: ["app-server", "--help"], platform, environment });
   } catch (error) {
-    return Promise.resolve({ available: false, reason: error.message });
+    return { available: false, reason: error.message };
   }
   return new Promise((resolve) => {
     let child;

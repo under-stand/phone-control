@@ -5,6 +5,7 @@ import {
   appServerSpawnSpec,
   createAppServerTransport,
   probeAppServerCommand,
+  resolveCodexCommand,
   spawnStdioAppServer,
 } from "../src/app-server-transport.mjs";
 
@@ -31,6 +32,24 @@ function fakeChild({ onStart = null } = {}) {
 }
 
 export const tests = [
+  {
+    name: "redirects a stale Windows Codex bundle to a complete sibling",
+    async run() {
+      const stale = "C:\\Users\\Me\\AppData\\Local\\OpenAI\\Codex\\bin\\old\\codex.exe";
+      const current = "C:\\Users\\Me\\AppData\\Local\\OpenAI\\Codex\\bin\\current\\codex.exe";
+      const available = new Set([
+        current,
+        "C:\\Users\\Me\\AppData\\Local\\OpenAI\\Codex\\bin\\current\\codex-code-mode-host.exe",
+      ].map((value) => value.toLowerCase()));
+      const resolved = await resolveCodexCommand(stale, {
+        platform: "win32",
+        environment: { Path: "C:\\Users\\Me\\AppData\\Local\\OpenAI\\Codex\\bin\\current" },
+        exists: async (value) => available.has(value.toLowerCase()),
+        listDirectory: async () => [],
+      });
+      assert.equal(resolved, current);
+    },
+  },
   {
     name: "prefers the managed Unix socket when it is available",
     async run() {
