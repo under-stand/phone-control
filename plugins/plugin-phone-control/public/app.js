@@ -9,8 +9,8 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=67";
-import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=67";
+} from "./lib/format.js?v=71";
+import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=71";
 
 function storedCompletionKeys() {
   try {
@@ -2267,7 +2267,7 @@ function renderDetails(session, { loading = false } = {}) {
   const showControlNotice = controlIsImportant || (!question && !approval && !composer);
   const deletionBlocked = ["working", "waiting"].includes(session.status);
   const technicalOpen = Boolean(elements.detailContent.querySelector(".technical-details[open]"));
-  const detailMoreOpen = Boolean(elements.detailHeader.querySelector(".detail-more[open]"));
+  const detailActionCount = 2 + Number(session.taskKind === "user") + Number(Boolean(session.control?.canHandoff)) + Number(Boolean(session.control?.canReclaim));
   syncMarkup(elements.detailHeader, `
     <div class="detail-heading">
       <div class="detail-title-block">
@@ -2275,23 +2275,17 @@ function renderDetails(session, { loading = false } = {}) {
         <div class="detail-context-line">
           <span class="detail-status" data-status="${escapeHtml(displayStatus)}"><i aria-hidden="true"></i><b>${labels[displayStatus] || labels.unknown}</b></span>
           <span class="detail-project-context">${escapeHtml(projectName(session))} · ${escapeHtml(session.surface)}</span>
-          <span class="detail-heading-actions">
-            <button class="target-toggle${state.targetSessionId === session.id ? " active" : ""}" type="button" data-target-session-id="${escapeHtml(session.id)}" aria-label="${state.targetSessionId === session.id ? "取消追踪这个会话" : "追踪这个会话"}" aria-pressed="${state.targetSessionId === session.id}" title="${state.targetSessionId === session.id ? "取消目标追踪" : "固定到手机顶部并只提醒这个会话"}"><img src="/icons/crosshair-simple.svg" alt=""><b class="sr-only">${state.targetSessionId === session.id ? "已追踪" : "追踪"}</b></button>
-            <details class="detail-more">
-              <summary class="detail-more-trigger" aria-label="更多会话操作" title="更多会话操作"><span aria-hidden="true">•••</span><b class="sr-only">更多</b></summary>
-              <div class="detail-more-menu">
-                <button class="task-title-jump" type="button" data-open-task-title>命名卡片</button>
-                ${session.taskKind === "user" ? `<button class="session-branch" type="button" data-branch-session="${escapeHtml(session.id)}" title="带着当前历史开一个可独立继续的新会话">分叉继续</button>` : ""}
-                ${session.control?.canHandoff ? `<button class="session-handoff" type="button" data-handoff-session="${escapeHtml(session.id)}" title="释放 Phone Control 的会话占用，让电脑端继续">移交电脑</button>` : ""}
-                ${session.control?.canReclaim ? `<button class="session-reclaim" type="button" data-reclaim-session="${escapeHtml(session.id)}" title="确认电脑端已释放后，重新由手机控制">手机接管</button>` : ""}
-              </div>
-            </details>
+          <span class="detail-heading-actions${detailActionCount > 3 ? " is-full-row" : ""}" aria-label="会话快捷操作">
+            <button class="target-toggle${state.targetSessionId === session.id ? " active" : ""}" type="button" data-target-session-id="${escapeHtml(session.id)}" aria-label="${state.targetSessionId === session.id ? "取消追踪这个会话" : "追踪这个会话"}" aria-pressed="${state.targetSessionId === session.id}" title="${state.targetSessionId === session.id ? "取消目标追踪" : "固定到手机顶部并只提醒这个会话"}"><img src="/icons/crosshair-simple.svg" alt=""><b>${state.targetSessionId === session.id ? "已追踪" : "追踪"}</b></button>
+            <button class="task-title-jump" type="button" data-open-task-title>命名</button>
+            ${session.taskKind === "user" ? `<button class="session-branch" type="button" data-branch-session="${escapeHtml(session.id)}" title="带着当前历史开一个可独立继续的新会话">分叉继续</button>` : ""}
+            ${session.control?.canHandoff ? `<button class="session-handoff" type="button" data-handoff-session="${escapeHtml(session.id)}" title="释放 Phone Control 的会话占用，让电脑端继续">移交电脑</button>` : ""}
+            ${session.control?.canReclaim ? `<button class="session-reclaim" type="button" data-reclaim-session="${escapeHtml(session.id)}" title="确认电脑端已释放后，重新由手机控制">手机接管</button>` : ""}
           </span>
         </div>
       </div>
     </div>
     `);
-  elements.detailHeader.querySelector(".detail-more")?.toggleAttribute("open", detailMoreOpen);
   syncDetailContent({
     control: `${showControlNotice ? `<div class="control-note${controlIsImportant ? "" : " is-compact"}"><b>${escapeHtml(controlChannelLabel(session))}</b><p>${escapeHtml(controlExplanation(session))}</p></div>` : ""}${queuedCommandsMarkup(session)}`,
     conversationMarkup: loading ? `<div class="conversation-loading"><i></i><i></i><i></i></div>` : conversation(session.events, session),
@@ -2639,7 +2633,6 @@ async function cancelQueuedCommand(button) {
 async function branchSession(button) {
   const sessionId = button.dataset.branchSession;
   if (!sessionId) return;
-  button.closest(".detail-more")?.removeAttribute("open");
   const text = window.prompt("基于当前会话创建新分支。请输入新分支的第一条指令：");
   if (!text?.trim()) return;
   button.disabled = true;
@@ -2795,7 +2788,6 @@ function permissionSummary(session, configuration) {
 async function handoffSession(button) {
   const sessionId = button.dataset.handoffSession;
   if (!sessionId) return;
-  button.closest(".detail-more")?.removeAttribute("open");
   const warning = "把这个会话移交到电脑端？\n\n会话和历史都会保留，Phone Control 会释放写入占用并把手机端切成只读。由于当前空闲会话共用一个受管 App Server，其他由手机持有的空闲会话也会同时释放。\n\n请确认没有其他手机任务正在执行，然后再继续。";
   if (!window.confirm(warning)) return;
   button.disabled = true;
@@ -2829,7 +2821,6 @@ async function handoffSession(button) {
 async function reclaimSession(button) {
   const sessionId = button.dataset.reclaimSession;
   if (!sessionId) return;
-  button.closest(".detail-more")?.removeAttribute("open");
   const warning = "重新由手机接管这个会话？\n\n请先在电脑端等待当前任务结束，并完全关闭该会话。接管成功后不要继续在电脑端打开它，否则会再次发生写入者冲突。";
   if (!window.confirm(warning)) return;
   button.disabled = true;
@@ -3455,7 +3446,6 @@ elements.list.addEventListener("toggle", (event) => {
 elements.detailClose.addEventListener("click", () => elements.detail.close());
 elements.detail.addEventListener("close", () => {
   const sessionId = elements.detail.dataset.sessionId;
-  elements.detailHeader.querySelector(".detail-more")?.removeAttribute("open");
   elements.detailContent.querySelector(".technical-details")?.removeAttribute("open");
   state.detailDirtySessions.delete(sessionId);
   clearDetailUpdatePending(sessionId);
@@ -3478,7 +3468,6 @@ elements.detail.addEventListener("click", (event) => {
   }
   const openTaskTitle = event.target.closest("[data-open-task-title]");
   if (openTaskTitle) {
-    openTaskTitle.closest(".detail-more")?.removeAttribute("open");
     const technical = elements.detailContent.querySelector(".technical-details");
     const form = technical?.querySelector("[data-task-title-form]");
     if (technical && form) {
