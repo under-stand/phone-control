@@ -12,6 +12,8 @@ export function createRolloutContext(filePath) {
     model: null,
     reasoningEffort: null,
     serviceTier: null,
+    permissionMode: null,
+    approvalPolicy: null,
     parentThreadId: null,
     threadSource: null,
     agentRole: null,
@@ -35,12 +37,39 @@ function baseEvent(record, context, kind, salt = "") {
     model: context.model,
     reasoningEffort: context.reasoningEffort,
     serviceTier: context.serviceTier,
+    permissionMode: context.permissionMode,
+    approvalPolicy: context.approvalPolicy,
     surface: context.surface,
     transcriptPath: context.filePath,
     parentThreadId: context.parentThreadId,
     threadSource: context.threadSource,
     agentRole: context.agentRole,
   };
+}
+
+function permissionModeFromSettings(settings) {
+  if (!settings || typeof settings !== "object") return null;
+  const activeId = asString(
+    settings.active_permission_profile?.id
+      ?? settings.activePermissionProfile?.id
+      ?? settings.permission_profile?.id
+      ?? settings.permissionProfile?.id,
+  )?.toLowerCase() || "";
+  const sandbox = asString(
+    settings.sandbox_mode
+      ?? settings.sandboxMode
+      ?? settings.sandbox_policy?.type
+      ?? settings.sandboxPolicy?.type,
+  )?.toLowerCase() || "";
+  const profileType = asString(
+    settings.permission_profile?.type
+      ?? settings.permissionProfile?.type,
+  )?.toLowerCase() || "";
+  const value = `${activeId} ${sandbox} ${profileType}`;
+  if (value.includes("read-only") || value.includes("readonly")) return "read-only";
+  if (value.includes("danger-full-access") || value.includes("dangerfullaccess")) return "danger-full-access";
+  if (value.includes("workspace-write") || value.includes("workspacewrite")) return "workspace-write";
+  return null;
 }
 
 function rolloutAgentRole(source) {
@@ -90,6 +119,8 @@ export function normalizeRolloutRecord(record, context) {
       ?? payload.collaboration_mode?.settings?.reasoning_effort,
     ) || context.reasoningEffort;
     context.serviceTier = asString(payload.service_tier ?? payload.serviceTier) || context.serviceTier;
+    context.permissionMode = permissionModeFromSettings(payload) || context.permissionMode;
+    context.approvalPolicy = asString(payload.approval_policy ?? payload.approvalPolicy) || context.approvalPolicy;
     return [];
   }
   if (!context.sessionId) return [];
@@ -100,6 +131,8 @@ export function normalizeRolloutRecord(record, context) {
     context.model = asString(settings.model) || context.model;
     context.reasoningEffort = asString(settings.reasoning_effort ?? settings.reasoningEffort) || context.reasoningEffort;
     context.serviceTier = asString(settings.service_tier ?? settings.serviceTier) || context.serviceTier;
+    context.permissionMode = permissionModeFromSettings(settings) || context.permissionMode;
+    context.approvalPolicy = asString(settings.approval_policy ?? settings.approvalPolicy) || context.approvalPolicy;
     return [];
   }
 

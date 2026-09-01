@@ -154,6 +154,7 @@ class TestAppServerBridge extends EventEmitter {
       model: body.model || null,
       reasoningEffort: body.reasoningEffort || null,
       serviceTier: body.serviceTier || null,
+      permissionProfile: body.permissionProfile || null,
       cwd: body.cwd || null,
       delivery: "delivered",
       status: "delivered",
@@ -985,6 +986,9 @@ export const tests = [
             kind: "turn_complete",
             at: "2026-08-24T05:00:00.000Z",
             surface: "Desktop",
+            cwd: dataDir,
+            permissionMode: "workspace-write",
+            approvalPolicy: "onRequest",
             transcriptPath: "/tmp/thread-control.jsonl",
           },
         });
@@ -1022,6 +1026,8 @@ export const tests = [
         assert.equal(delivered.status, 200);
         assert.equal(delivered.body.command.action, "start");
         assert.equal(bridge.commands.get("phone-server-0002").text, "continue from my phone");
+        assert.equal(bridge.commands.get("phone-server-0002").cwd, dataDir);
+        assert.equal(bridge.commands.get("phone-server-0002").permissionProfile, "on-request");
 
         const continued = await request({ port: started.port, pathname: "/api/sessions/thread-control", headers: { cookie } });
         assert.equal(continued.body.session.status, "working");
@@ -1289,6 +1295,134 @@ export const tests = [
         }
         const staleList = await request({ port: started.port, pathname: "/api/sessions/thread-outbox/queued-commands", headers: { cookie } });
         assert.equal(staleList.body.queued.find((entry) => entry.id === "phone-queued-api-0002").status, "needs_review");
+      } finally {
+        await runtime.close();
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: "continues queued phone-owned work with the session workspace and permissions",
+    async run() {
+      const dataDir = await mkdtemp(path.join(os.tmpdir(), "phone-control-outbox-context-api-test-"));
+      const bridge = new TestAppServerBridge();
+      const runtime = await createPhoneControlServer({
+        config: { host: "127.0.0.1", port: 0, token: "test-token", dataDir, interactions: { enabled: true } },
+        scanRollouts: false,
+        appServerBridge: bridge,
+      });
+      try {
+        const started = await runtime.start();
+        const paired = await request({ port: started.port, pathname: "/?token=test-token" });
+        const cookie = paired.headers["set-cookie"][0].split(";", 1)[0];
+        const at = Date.now();
+        runtime.store.ingest({
+          eventId: "outbox-phone-context-prompt",
+          sessionId: "thread-phone-context",
+          turnId: "turn-phone-context-old",
+          kind: "user_prompt",
+          at: new Date(at - 2_000).toISOString(),
+          surface: "Phone",
+          cwd: dataDir,
+          model: "gpt-test",
+          reasoningEffort: "high",
+          serviceTier: "fast",
+          permissionMode: "workspace-write",
+          approvalPolicy: "onRequest",
+          message: { role: "user", text: "先准备项目文件" },
+        });
+        runtime.store.ingest({
+          eventId: "outbox-phone-context-complete",
+          sessionId: "thread-phone-context",
+          turnId: "turn-phone-context-old",
+          kind: "turn_complete",
+          at: new Date(at - 1_000).toISOString(),
+          transcriptPath: path.join(dataDir, "thread-phone-context.jsonl"),
+        });
+        bridge.load("thread-phone-context", { status: "idle", activeFlags: [], activeTurnId: null });
+        bridge.connected = false;
+        bridge.emit("status", bridge.status());
+
+        const queued = await request({
+          port: started.port,
+          pathname: "/api/sessions/thread-phone-context/queue",
+          method: "POST",
+          headers: { cookie, "x-phone-control-client": "1" },
+          body: { text: "断线后继续修改项目文件", clientMessageId: "phone-queued-context-0001" },
+        });
+        assert.equal(queued.status, 202);
+        bridge.connected = true;
+        bridge.emit("status", bridge.status());
+        for (let attempt = 0; attempt < 40 && !bridge.commands.has("phone-queued-context-0001"); attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        const command = bridge.commands.get("phone-queued-context-0001");
+        assert.equal(command.cwd, dataDir, "queued continuation should stay in the phone session workspace");
+        assert.equal(command.permissionProfile, "on-request", "queued continuation should preserve the safe write profile");
+        assert.equal(command.model, "gpt-test");
+        assert.equal(command.reasoningEffort, "high");
+        assert.equal(command.serviceTier, "fast");
+        const after = await request({ port: started.port, pathname: "/api/sessions/thread-phone-context/queued-commands", headers: { cookie } });
+        assert.equal(after.body.queued[0].status, "delivered");
+      } finally {
+        await runtime.close();
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: "reclaims a released desktop session before delivering queued phone input",
+    async run() {
+      const dataDir = await mkdtemp(path.join(os.tmpdir(), "phone-control-outbox-reclaim-api-test-"));
+      const bridge = new TestAppServerBridge();
+      const runtime = await createPhoneControlServer({
+        config: { host: "127.0.0.1", port: 0, token: "test-token", dataDir, interactions: { enabled: true } },
+        scanRollouts: false,
+        appServerBridge: bridge,
+      });
+      try {
+        const started = await runtime.start();
+        const paired = await request({ port: started.port, pathname: "/?token=test-token" });
+        const cookie = paired.headers["set-cookie"][0].split(";", 1)[0];
+        runtime.store.ingest({
+          eventId: "outbox-reclaim-source-prompt",
+          sessionId: "thread-desktop-outbox",
+          turnId: "turn-desktop-old",
+          kind: "user_prompt",
+          at: new Date(Date.now() - 2_000).toISOString(),
+          surface: "Desktop",
+          message: { role: "user", text: "Prepare a desktop continuation" },
+        });
+        runtime.store.ingest({
+          eventId: "outbox-reclaim-source-complete",
+          sessionId: "thread-desktop-outbox",
+          turnId: "turn-desktop-old",
+          kind: "turn_complete",
+          at: new Date(Date.now() - 1_000).toISOString(),
+          transcriptPath: path.join(dataDir, "thread-desktop-outbox.jsonl"),
+        });
+        bridge.load("thread-desktop-outbox", { status: "idle", activeFlags: [], activeTurnId: null });
+        bridge.handedOffThreads.set("thread-desktop-outbox", "This desktop session was handed off and is phone read-only");
+        bridge.threads.clear();
+        bridge.emit("status", bridge.status());
+
+        const queued = await request({
+          port: started.port,
+          pathname: "/api/sessions/thread-desktop-outbox/queue",
+          method: "POST",
+          headers: { cookie, "x-phone-control-client": "1" },
+          body: { text: "电脑退出后继续修改文件", clientMessageId: "phone-queued-reclaim-0001" },
+        });
+        assert.equal(queued.status, 202);
+        for (let attempt = 0; attempt < 40 && !bridge.commands.has("phone-queued-reclaim-0001"); attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        assert.equal(bridge.reclaims.has("thread-desktop-outbox"), true, "a queued instruction should safely reclaim a released desktop session");
+        assert.equal(bridge.commands.get("phone-queued-reclaim-0001").text, "电脑退出后继续修改文件");
+        const after = await request({ port: started.port, pathname: "/api/sessions/thread-desktop-outbox/queued-commands", headers: { cookie } });
+        assert.equal(after.body.queued[0].status, "delivered");
+        const detail = await request({ port: started.port, pathname: "/api/sessions/thread-desktop-outbox", headers: { cookie } });
+        assert.equal(detail.body.session.control.canSend, true, "the reclaimed session must expose phone write control after desktop exit");
       } finally {
         await runtime.close();
         await rm(dataDir, { recursive: true, force: true });

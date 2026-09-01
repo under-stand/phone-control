@@ -165,6 +165,35 @@ function publicHostUrls(port) {
   return urls;
 }
 
+// A queued instruction is often submitted while the composer cannot reach the
+// live App Server. In that case the browser intentionally sends blank override
+// fields to mean "follow this session". Keep the continuation on the same
+// workspace and safe sandbox profile once the writer becomes available again.
+// Never infer dangerous full-computer access: that profile must be explicitly
+// selected and confirmed for each new turn on the phone.
+function inheritedSessionExecutionContext(session = {}) {
+  const permissionMode = String(session.permissionMode || "").trim().toLowerCase();
+  const approvalPolicy = String(session.approvalPolicy || "").trim().toLowerCase();
+  let permissionProfile = null;
+  if (permissionMode === "read-only" || permissionMode === "readonly") {
+    permissionProfile = "read-only";
+  } else if (permissionMode === "workspace-write" || permissionMode === "workspacewrite") {
+    permissionProfile = /on.?request/.test(approvalPolicy) ? "on-request" : "workspace-write";
+  } else if (permissionMode === "danger-full-access" || permissionMode === "dangerfullaccess") {
+    // A desktop thread may have been running with full access. Phone
+    // continuations inherit only the project-scoped write capability unless
+    // the user explicitly confirms full access in the composer.
+    permissionProfile = /on.?request/.test(approvalPolicy) ? "on-request" : "workspace-write";
+  }
+  return {
+    cwd: session.cwd || null,
+    model: session.model || null,
+    reasoningEffort: session.reasoningEffort || null,
+    serviceTier: session.serviceTier || null,
+    permissionProfile,
+  };
+}
+
 function staticTarget(publicDir, pathname) {
   const requested = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const target = path.resolve(publicDir, requested);
@@ -474,7 +503,7 @@ export async function createPhoneControlServer({
     if (!outbox.pending().length) return;
     outboxProcessing = true;
     try {
-      const bridgeStatus = bridge?.status?.() || { connected: false, initialized: false, threadStates: {}, handedOffThreads: [], unavailableThreadReasons: {} };
+      let bridgeStatus = bridge?.status?.() || { connected: false, initialized: false, threadStates: {}, handedOffThreads: [], unavailableThreadReasons: {} };
       const processedSessions = new Set();
       for (const entry of outbox.pending()) {
         if (processedSessions.has(entry.sessionId)) continue;
@@ -494,8 +523,27 @@ export async function createPhoneControlServer({
           continue;
         }
         if (bridgeStatus.handedOffThreads?.includes(entry.sessionId)) {
-          await setWaiting("desktop", "The desktop currently owns this session");
-          continue;
+          if (!session.control?.canReclaim) {
+            await setWaiting("desktop", "The desktop currently owns this session");
+            continue;
+          }
+          if (bridgeStatus.handoffSupported && typeof bridge.reclaimForPhone === "function") {
+            try {
+              await bridge.reclaimForPhone({ sessionId: entry.sessionId }, { id: entry.deviceId, name: "Queued phone" });
+              bridgeStatus = bridge.status?.() || bridgeStatus;
+            } catch (error) {
+              const message = String(error?.message || "The desktop currently owns this session");
+              if (error?.statusCode === 404) {
+                await outbox.update(entry.id, { status: "failed", waitingFor: null, lastError: message.slice(0, 500) });
+              } else {
+                await setWaiting("desktop", message.slice(0, 500));
+              }
+              continue;
+            }
+          } else {
+            await setWaiting("desktop", "The desktop currently owns this session");
+            continue;
+          }
         }
         if (bridgeStatus.unavailableThreadReasons?.[entry.sessionId]) {
           await setWaiting("session", bridgeStatus.unavailableThreadReasons[entry.sessionId]);
@@ -531,6 +579,7 @@ export async function createPhoneControlServer({
           await setWaiting("turn", "Waiting for the current Codex turn to finish");
           continue;
         }
+        const inherited = inheritedSessionExecutionContext(session);
         await outbox.update(entry.id, {
           status: "sending",
           waitingFor: null,
@@ -542,12 +591,12 @@ export async function createPhoneControlServer({
             sessionId: entry.sessionId,
             expectedTurnId: entry.expectedTurnId,
             text: entry.text,
-            model: entry.model,
-            reasoningEffort: entry.reasoningEffort,
-            serviceTier: entry.serviceTier,
-            permissionProfile: entry.permissionProfile,
+            model: entry.model || inherited.model,
+            reasoningEffort: entry.reasoningEffort || inherited.reasoningEffort,
+            serviceTier: entry.serviceTier || inherited.serviceTier,
+            permissionProfile: entry.permissionProfile || inherited.permissionProfile,
             confirmDangerFullAccess: entry.confirmDangerFullAccess,
-            cwd: entry.cwd,
+            cwd: entry.cwd || inherited.cwd,
             clientMessageId: entry.id,
           }, { id: entry.deviceId, name: "Queued phone" });
           rememberPhonePrompt(command, entry.text);
@@ -1323,6 +1372,7 @@ export async function createPhoneControlServer({
           json(response, 409, { error: "The Codex turn changed; refresh before sending" });
           return;
         }
+        const inherited = expectedTurnId == null ? inheritedSessionExecutionContext(session) : {};
         const imageRecords = await images.consume(body.imageIds || [], { deviceId: device.id, sessionId: id, expectedTurnId });
         let command;
         try {
@@ -1331,12 +1381,12 @@ export async function createPhoneControlServer({
             expectedTurnId,
             text: body.text,
             images: imageRecords.map((record) => ({ path: record.path, mime: record.mime })),
-            model: body.model,
-            reasoningEffort: body.reasoningEffort,
-            serviceTier: body.serviceTier,
-            permissionProfile: body.permissionProfile,
+            model: body.model || inherited.model,
+            reasoningEffort: body.reasoningEffort || inherited.reasoningEffort,
+            serviceTier: body.serviceTier || inherited.serviceTier,
+            permissionProfile: body.permissionProfile || inherited.permissionProfile,
             confirmDangerFullAccess: body.confirmDangerFullAccess,
-            cwd: body.cwd,
+            cwd: body.cwd || inherited.cwd,
             clientMessageId: body.clientMessageId,
           }, device);
           rememberPhonePrompt(command, body.text);

@@ -383,14 +383,47 @@ export const tests = [
       const settings = normalizeRolloutRecord({
         type: "event_msg",
         timestamp: "2026-08-23T12:00:01Z",
-        payload: { type: "thread_settings_applied", thread_settings: { model: "gpt-5.6-terra", reasoning_effort: "ultra", service_tier: "priority", cwd: "/new" } },
+        payload: {
+          type: "thread_settings_applied",
+          thread_settings: {
+            model: "gpt-5.6-terra",
+            reasoning_effort: "ultra",
+            service_tier: "priority",
+            approval_policy: "onRequest",
+            active_permission_profile: { id: ":workspace-write" },
+            cwd: "/new",
+          },
+        },
       }, context);
       const event = normalizeRolloutRecord({ type: "event_msg", timestamp: "2026-08-23T12:00:02Z", payload: { type: "agent_message", message: "Settings applied" } }, context)[0];
       assert.deepEqual(settings, []);
       assert.equal(event.model, "gpt-5.6-terra");
       assert.equal(event.reasoningEffort, "ultra");
       assert.equal(event.serviceTier, "priority");
+      assert.equal(event.permissionMode, "workspace-write");
+      assert.equal(event.approvalPolicy, "onRequest");
       assert.equal(event.cwd, "/new");
+    },
+  },
+  {
+    name: "restores sandbox permission from a rollout turn context",
+    run() {
+      const context = createRolloutContext("/tmp/rollout-turn-context.jsonl");
+      normalizeRolloutRecord({ type: "session_meta", timestamp: "2026-08-23T12:00:00Z", payload: { id: "thread-turn-context", source: "desktop" } }, context);
+      normalizeRolloutRecord({
+        type: "turn_context",
+        timestamp: "2026-08-23T12:00:01Z",
+        payload: {
+          cwd: "C:/repo",
+          approval_policy: "never",
+          permission_profile: { type: "disabled" },
+          sandbox_policy: { type: "danger-full-access" },
+        },
+      }, context);
+      const event = normalizeRolloutRecord({ type: "event_msg", timestamp: "2026-08-23T12:00:02Z", payload: { type: "agent_message", message: "Context restored" } }, context)[0];
+      assert.equal(event.cwd, "C:/repo");
+      assert.equal(event.permissionMode, "danger-full-access");
+      assert.equal(event.approvalPolicy, "never");
     },
   },
   {
