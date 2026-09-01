@@ -2237,6 +2237,7 @@ function renderDetails(session, { loading = false } = {}) {
     || session.control?.handedOff
     || session.control?.reason?.startsWith("A stop request was delivered")
     || session.control?.reason?.startsWith("Live control unavailable:")
+    || (isUserTask(session) && !session.control?.canSend && !session.control?.canAnswer && !session.control?.canApprove)
     || (!session.control?.live && session.liveness === "recent" && ["working", "waiting"].includes(session.status))
   );
   const showControlNotice = controlIsImportant || (!question && !approval && !composer);
