@@ -1,4 +1,4 @@
-import { mapPointerToViewport } from "./lib/browser-frame-controls.js?v=75";
+import { mapPointerToViewport } from "./lib/browser-frame-controls.js?v=76";
 
 const elements = {
   connection: document.querySelector("#browser-connection"),
@@ -32,8 +32,11 @@ let browser = null;
 let leaseToken = null;
 let pointerStart = null;
 let errorTimer = null;
+let frameLoadTimer = null;
 let refreshing = false;
 let busy = false;
+let initialSyncInFlight = false;
+let frameStatusText = "正在取得网页画面";
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -70,6 +73,12 @@ function setBusy(value) {
   busy = Boolean(value);
   elements.busy.hidden = !busy;
   for (const control of elements.console.querySelectorAll("button, select")) control.disabled = busy;
+}
+
+function setFrameStatus(message) {
+  frameStatusText = message;
+  const text = elements.placeholder.querySelector("p");
+  if (text) text.textContent = message;
 }
 
 function activeTab() {
@@ -109,24 +118,36 @@ function render() {
   else {
     elements.image.hidden = true;
     elements.placeholder.hidden = false;
+    setFrameStatus(frameStatusText);
   }
 }
 
 function updateFrame(frame) {
   const current = elements.image.dataset.frameId;
   if (current === frame.frameId && !elements.image.hidden) return;
+  clearTimeout(frameLoadTimer);
   elements.placeholder.hidden = false;
+  setFrameStatus("正在加载网页画面");
   elements.image.onload = () => {
+    clearTimeout(frameLoadTimer);
     elements.image.hidden = false;
     elements.placeholder.hidden = true;
+    frameStatusText = "正在取得网页画面";
   };
   elements.image.onerror = () => {
+    clearTimeout(frameLoadTimer);
     elements.image.hidden = true;
     elements.placeholder.hidden = false;
+    setFrameStatus("画面加载较慢，请点“刷新画面”重试");
     showError(new Error("网页画面已过期，请点“刷新画面”重试"));
   };
   elements.image.dataset.frameId = frame.frameId;
   elements.image.src = `/api/browser/frame?frameId=${encodeURIComponent(frame.frameId)}&t=${Date.now()}`;
+  frameLoadTimer = setTimeout(() => {
+    elements.image.hidden = true;
+    elements.placeholder.hidden = false;
+    setFrameStatus("画面加载较慢，请点“刷新画面”重试");
+  }, 8_000);
 }
 
 async function acquireControl() {
@@ -186,16 +207,51 @@ async function refresh({ initialize = false } = {}) {
   try {
     browser = await api("/api/browser");
     render();
-    if (initialize && browser.connected) {
-      await acquireControl();
-      await action({ type: "listTabs" });
-      if (!browser.frame) await action({ type: "screenshot" });
-    }
+    if (initialize && browser.connected && !browser.frame) startInitialSync();
   } catch (error) {
     showError(error);
   } finally {
     refreshing = false;
   }
+}
+
+function withDeadline(promise, milliseconds) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error("扩展响应较慢"), { code: "initial_sync_timeout" })), milliseconds);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function startInitialSync() {
+  if (initialSyncInFlight || !browser?.connected || browser.frame) return;
+  initialSyncInFlight = true;
+  setFrameStatus("正在取得网页画面");
+  void (async () => {
+    try {
+      // Keep the first paint independent from the extension round trip. The
+      // status endpoint already contains the latest pushed tab list, while a
+      // slow command must not leave the phone page blocked on a spinner.
+      try {
+        await withDeadline(action({ type: "listTabs" }), 4_000);
+      } catch (error) {
+        if (error?.code !== "initial_sync_timeout") throw error;
+      }
+      if (browser?.connected && !browser.frame) {
+        try {
+          await withDeadline(action({ type: "screenshot" }), 8_000);
+        } catch (error) {
+          if (error?.code !== "initial_sync_timeout") throw error;
+        }
+      }
+    } catch (error) {
+      showError(error);
+    } finally {
+      initialSyncInFlight = false;
+      if (!browser?.frame) setFrameStatus("扩展响应较慢，正在等待最新画面…");
+      render();
+    }
+  })();
 }
 
 async function performFrameAction(details) {

@@ -88,6 +88,16 @@ try {
   await page.locator("#browser-frame-image:not([hidden])").waitFor();
   assert.equal(await page.locator("#frame-title").textContent(), "Example");
   assert.equal(await page.locator("#browser-tabs").inputValue(), "7");
+  assert.equal(
+    await page.locator("#browser-address-form button").evaluate((element) => getComputedStyle(element).backgroundColor),
+    "rgb(104, 87, 245)",
+  );
+  const addressLayout = await page.locator("#browser-address-form").evaluate((element) => ({
+    formWidth: element.getBoundingClientRect().width,
+    inputWidth: element.querySelector("input")?.getBoundingClientRect().width || 0,
+    buttonWidth: element.querySelector("button")?.getBoundingClientRect().width || 0,
+  }));
+  assert.ok(addressLayout.formWidth > 0 && addressLayout.inputWidth > 0 && addressLayout.buttonWidth >= 58);
   await responding;
   process.stdout.write("Browser mobile regression passed.\n");
 } finally {

@@ -48,9 +48,12 @@ export const tests = [
     async run() {
       const manifest = JSON.parse(await readFile(path.join(root, "extensions/chrome/manifest.json"), "utf8"));
       assert.deepEqual(manifest.host_permissions, ["http://127.0.0.1:*/*", "http://localhost:*/*"]);
+      assert.ok(manifest.permissions.includes("alarms"));
       const background = await readFile(path.join(root, "extensions/chrome/background.js"), "utf8");
       assert.match(background, /discoverServiceUrl/);
       assert.match(background, /set-service-url/);
+      assert.match(background, /chrome\.alarms\.onAlarm/);
+      assert.match(background, /const tab = await chooseTab\(\)\.catch/);
     },
   },
 ];

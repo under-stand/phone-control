@@ -6,6 +6,8 @@ import {
 
 const DEFAULT_SERVICE_URL = `http://127.0.0.1:${DEFAULT_SERVICE_PORT}`;
 const SERVICE_DISCOVERY_RETRY_MS = 3_000;
+const DEBUGGER_COMMAND_TIMEOUT_MS = 8_000;
+const COMMAND_LOOP_ALARM = "phone-control-command-loop";
 const EXTENSION_HEADER = { "x-phone-control-browser-extension": "1" };
 const attachedTabs = new Set();
 const pageGenerations = new Map();
@@ -19,6 +21,18 @@ let discoveryPromise = null;
 let lastDiscoveryAt = 0;
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+function withTimeout(promise, milliseconds, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(message);
+      error.code = "debugger_timeout";
+      reject(error);
+    }, milliseconds);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 async function resolveServiceUrl({ configuredServiceUrl = null, force = false } = {}) {
   const fallback = activeServiceUrl || configuredServiceUrl || DEFAULT_SERVICE_URL;
@@ -141,17 +155,31 @@ async function chooseTab() {
 async function attach(tabId) {
   if (attachedTabs.has(tabId)) return;
   try {
-    await chrome.debugger.attach({ tabId }, "1.3");
+    await withTimeout(chrome.debugger.attach({ tabId }, "1.3"), DEBUGGER_COMMAND_TIMEOUT_MS, "Chrome 调试器连接超时");
     attachedTabs.add(tabId);
-    await chrome.debugger.sendCommand({ tabId }, "Page.enable");
+    await withTimeout(chrome.debugger.sendCommand({ tabId }, "Page.enable"), DEBUGGER_COMMAND_TIMEOUT_MS, "Chrome 页面通道连接超时");
   } catch (error) {
+    attachedTabs.delete(tabId);
+    await chrome.debugger.detach({ tabId }).catch(() => {});
     throw new Error(`无法接管这个标签页：${error.message || error}`);
   }
 }
 
 async function command(tabId, method, params = {}) {
   await attach(tabId);
-  return chrome.debugger.sendCommand({ tabId }, method, params);
+  try {
+    return await withTimeout(
+      chrome.debugger.sendCommand({ tabId }, method, params),
+      DEBUGGER_COMMAND_TIMEOUT_MS,
+      "Chrome 页面响应超时",
+    );
+  } catch (error) {
+    if (error?.code === "debugger_timeout") {
+      attachedTabs.delete(tabId);
+      await chrome.debugger.detach({ tabId }).catch(() => {});
+    }
+    throw error;
+  }
 }
 
 async function capture(tab = null) {
@@ -330,7 +358,11 @@ async function hello() {
   });
   connection = { connected: true, error: null, lastSeenAt: new Date().toISOString() };
   await chrome.storage.local.set({ connection });
-  if (selectedTabId != null) scheduleCapture(selectedTabId);
+  // A fresh service worker may not have a persisted selected tab yet. Pick a
+  // usable tab immediately so the phone gets a frame without waiting for the
+  // first manual browser action.
+  const tab = await chooseTab().catch(() => null);
+  if (tab) scheduleCapture(tab.id);
 }
 
 async function postResult(clientId, commandId, outcome) {
@@ -419,6 +451,13 @@ chrome.debugger.onDetach.addListener((source) => {
     void publishSnapshot({ includeFrame: false }).catch(() => {});
   }
 });
+
+chrome.alarms.create(COMMAND_LOOP_ALARM, { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener(({ name }) => {
+  if (name === COMMAND_LOOP_ALARM) void runLoop();
+});
+chrome.runtime.onStartup.addListener(() => void runLoop());
+chrome.runtime.onInstalled.addListener(() => void runLoop());
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "status") {

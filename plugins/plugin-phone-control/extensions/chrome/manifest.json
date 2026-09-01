@@ -4,7 +4,7 @@
   "name": "Phone Control Browser Bridge",
   "version": "0.2.0",
   "description": "让本机 Phone Control 接管你选择的 Chrome 网页标签页。",
-  "permissions": ["debugger", "storage", "tabs"],
+  "permissions": ["alarms", "debugger", "storage", "tabs"],
   "host_permissions": ["http://127.0.0.1:*/*", "http://localhost:*/*"],
   "background": {
     "service_worker": "background.js",
