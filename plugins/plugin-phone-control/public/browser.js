@@ -1,9 +1,10 @@
-import { mapPointerToViewport } from "./lib/browser-frame-controls.js?v=76";
+import { mapPointerToViewport } from "./lib/browser-frame-controls.js?v=77";
 
 const elements = {
   connection: document.querySelector("#browser-connection"),
   empty: document.querySelector("#extension-empty"),
   console: document.querySelector("#browser-console"),
+  shell: document.querySelector(".browser-shell"),
   retry: document.querySelector("#retry-extension"),
   tabs: document.querySelector("#browser-tabs"),
   newTab: document.querySelector("#new-browser-tab"),
@@ -14,6 +15,7 @@ const elements = {
   addressForm: document.querySelector("#browser-address-form"),
   address: document.querySelector("#browser-address"),
   capture: document.querySelector("#capture-browser"),
+  expand: document.querySelector("#expand-browser"),
   frame: document.querySelector("#browser-frame"),
   image: document.querySelector("#browser-frame-image"),
   placeholder: document.querySelector("#frame-placeholder"),
@@ -33,10 +35,13 @@ let leaseToken = null;
 let pointerStart = null;
 let errorTimer = null;
 let frameLoadTimer = null;
+let busyTimer = null;
 let refreshing = false;
 let busy = false;
 let initialSyncInFlight = false;
 let frameStatusText = "正在取得网页画面";
+let browserFullscreen = false;
+let refreshTimer = null;
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -71,8 +76,59 @@ function showError(error) {
 
 function setBusy(value) {
   busy = Boolean(value);
-  elements.busy.hidden = !busy;
+  clearTimeout(busyTimer);
+  elements.busy.hidden = true;
+  if (busy) {
+    busyTimer = setTimeout(() => {
+      if (busy) elements.busy.hidden = false;
+    }, 180);
+  }
   for (const control of elements.console.querySelectorAll("button, select")) control.disabled = busy;
+}
+
+function setBrowserFullscreen(value) {
+  browserFullscreen = Boolean(value);
+  document.body.classList.toggle("browser-fullscreen", browserFullscreen);
+  elements.shell.classList.toggle("is-browser-fullscreen", browserFullscreen);
+  elements.expand.textContent = browserFullscreen ? "退出全屏" : "横向全屏";
+  elements.expand.setAttribute("aria-label", browserFullscreen ? "退出横向全屏" : "横向全屏查看网页");
+}
+
+async function toggleBrowserFullscreen() {
+  const entering = !browserFullscreen;
+  setBrowserFullscreen(entering);
+  if (entering) {
+    try {
+      await document.documentElement.requestFullscreen?.();
+    } catch {
+      // The CSS fullscreen layout remains available on browsers that do not
+      // expose the Fullscreen API (notably some iOS browsers).
+    }
+    try {
+      await globalThis.screen?.orientation?.lock?.("landscape-primary");
+    } catch {
+      // Orientation locking is optional; the user can still rotate manually.
+    }
+    return;
+  }
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen?.();
+  } catch {
+    // CSS fallback is already restored even if the browser rejects the exit.
+  }
+  try {
+    globalThis.screen?.orientation?.unlock?.();
+  } catch {
+    // Ignore unsupported orientation APIs.
+  }
+}
+
+function refreshSoon(delay = 550) {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    if (!document.hidden) void refresh();
+  }, delay);
 }
 
 function setFrameStatus(message) {
@@ -160,6 +216,7 @@ async function acquireControl() {
 async function action(details, {
   retryLease = true,
   retryNetwork = true,
+  retryFrame = true,
   clientActionId = crypto.randomUUID(),
 } = {}) {
   await acquireControl();
@@ -178,11 +235,31 @@ async function action(details, {
   } catch (error) {
     if (retryLease && error.status === 409 && error.code === "lease_required") {
       leaseToken = null;
-      return action(details, { retryLease: false, retryNetwork, clientActionId });
+      return action(details, { retryLease: false, retryNetwork, retryFrame, clientActionId });
+    }
+    if (retryFrame && error.status === 409 && error.code === "stale_frame" && details.frameId) {
+      // A background capture can replace the frame between a phone tap and
+      // the server's validation. Refresh metadata and retry the same command
+      // once with the current frame identity; the first attempt was rejected
+      // before it reached Chrome, so this cannot duplicate the action.
+      try {
+        browser = await api("/api/browser");
+        render();
+        const frame = browser?.frame;
+        if (frame) {
+          return action(
+            { ...details, frameId: frame.frameId, pageGeneration: frame.pageGeneration },
+            { retryLease, retryNetwork, retryFrame: false, clientActionId },
+          );
+        }
+      } catch {
+        // Fall through to the original stale-frame error when no fresh frame
+        // is available yet.
+      }
     }
     if (retryNetwork && !error.status) {
       await new Promise((resolve) => setTimeout(resolve, 250));
-      return action(details, { retryLease, retryNetwork: false, clientActionId });
+      return action(details, { retryLease, retryNetwork: false, retryFrame, clientActionId });
     }
     throw error;
   }
@@ -198,6 +275,7 @@ async function perform(details) {
   } finally {
     setBusy(false);
     render();
+    if (details.type !== "screenshot") refreshSoon();
   }
 }
 
@@ -287,6 +365,7 @@ elements.back.addEventListener("click", () => perform({ type: "back" }).catch(()
 elements.forward.addEventListener("click", () => perform({ type: "forward" }).catch(() => {}));
 elements.reload.addEventListener("click", () => perform({ type: "reload" }).catch(() => {}));
 elements.capture.addEventListener("click", () => perform({ type: "screenshot" }).catch(() => {}));
+elements.expand.addEventListener("click", () => toggleBrowserFullscreen().catch(() => {}));
 elements.scrollUp.addEventListener("click", () => performFrameAction({ type: "scroll", deltaY: -560 }).catch(showError));
 elements.scrollDown.addEventListener("click", () => performFrameAction({ type: "scroll", deltaY: 560 }).catch(showError));
 
@@ -347,6 +426,16 @@ elements.frame.addEventListener("pointerup", (event) => {
 
 elements.frame.addEventListener("pointercancel", () => { pointerStart = null; });
 window.addEventListener("pagehide", releaseControl);
+document.addEventListener("fullscreenchange", () => {
+  if (!document.fullscreenElement && browserFullscreen) {
+    setBrowserFullscreen(false);
+    try {
+      globalThis.screen?.orientation?.unlock?.();
+    } catch {
+      // Ignore unsupported orientation APIs.
+    }
+  }
+});
 
 void refresh({ initialize: true });
 setInterval(() => { if (!document.hidden) void refresh(); }, 4_000);

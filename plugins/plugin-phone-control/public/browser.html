@@ -7,8 +7,8 @@
     <meta name="description" content="通过 Phone Control 操作本机 Chrome 已打开的网页。">
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/styles.css?v=76">
-    <link rel="stylesheet" href="/browser.css?v=76">
+    <link rel="stylesheet" href="/styles.css?v=77">
+    <link rel="stylesheet" href="/browser.css?v=77">
     <title>浏览器 · Phone Control</title>
   </head>
   <body>
@@ -64,7 +64,10 @@
         <div class="frame-card" id="frame-card">
           <div class="frame-title-row">
             <div><strong id="frame-title">准备画面</strong><small id="frame-url">选择一个普通网页</small></div>
-            <button id="capture-browser" type="button">刷新画面</button>
+            <div class="frame-title-actions">
+              <button id="expand-browser" class="frame-expand" type="button" aria-label="横向全屏查看网页">横向全屏</button>
+              <button id="capture-browser" type="button">刷新画面</button>
+            </div>
           </div>
           <div class="browser-frame" id="browser-frame" aria-label="可直接点按操作的网页画面">
             <img id="browser-frame-image" alt="电脑 Chrome 当前网页截图" draggable="false" hidden>
@@ -86,6 +89,6 @@
 
       <p class="browser-error" id="browser-error" role="alert" hidden></p>
     </main>
-    <script src="/browser.js?v=76" type="module"></script>
+    <script src="/browser.js?v=77" type="module"></script>
   </body>
 </html>

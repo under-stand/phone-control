@@ -18,7 +18,7 @@
 .tab-picker .select-shell { min-width: 0; }
 .tab-picker select { width: 100%; min-height: 46px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); padding: 0 38px 0 12px; color: var(--ink); font: 650 14px/1.2 var(--sans); appearance: none; }
 .tab-actions { display: flex; align-items: end; gap: 8px; }
-.tab-actions button, .nav-buttons > button, .quick-scroll button, #capture-browser { min-height: 46px; padding: 0 14px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); color: var(--ink); font-weight: 750; cursor: pointer; }
+.tab-actions button, .nav-buttons > button, .quick-scroll button, #capture-browser, #expand-browser { min-height: 46px; padding: 0 14px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); color: var(--ink); font-weight: 750; cursor: pointer; }
 .tab-actions .danger-quiet { color: #9b3c2e; }
 .nav-buttons { grid-column: 1 / -1; display: grid; grid-template-columns: 48px 48px 48px minmax(0,1fr); gap: 8px; }
 .nav-buttons > button { padding: 0; font-size: 22px; }
@@ -28,6 +28,9 @@
 .frame-card { padding: 16px; }
 .frame-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .frame-title-row > div { min-width: 0; }
+.frame-title-actions { display: flex; align-items: center; flex: 0 0 auto; gap: 8px; }
+.frame-title-actions button { white-space: nowrap; }
+.frame-expand { color: var(--violet); }
 .frame-title-row strong, .frame-title-row small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .frame-title-row strong { font: 750 17px/1.2 var(--display); }
 .frame-title-row small { max-width: 70vw; margin-top: 4px; color: var(--muted); font-size: 11px; }
@@ -49,6 +52,20 @@
 .browser-input-card #browser-send-text { border-radius: 0; }
 .browser-error { position: sticky; bottom: calc(12px + env(safe-area-inset-bottom)); z-index: 10; margin: 14px auto 0; width: fit-content; max-width: 92%; border-radius: 99px; background: #922f25; padding: 10px 16px; color: white; font-weight: 700; box-shadow: 0 12px 32px rgba(90,20,12,.25); }
 button:disabled, select:disabled { cursor: wait; opacity: .58; }
+.browser-fullscreen { overflow: hidden; }
+.browser-shell.is-browser-fullscreen { max-width: none; padding: 12px; }
+.browser-shell.is-browser-fullscreen .browser-intro,
+.browser-shell.is-browser-fullscreen .browser-toolbar-card,
+.browser-shell.is-browser-fullscreen .browser-input-card,
+.browser-shell.is-browser-fullscreen .frame-help,
+.browser-shell.is-browser-fullscreen .quick-scroll { display: none; }
+.browser-shell.is-browser-fullscreen .frame-card { position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column; gap: 10px; min-height: 0; border: 0; border-radius: 0; background: #111827; padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); }
+.browser-shell.is-browser-fullscreen .frame-title-row { flex: 0 0 auto; min-height: 44px; margin: 0; color: #fff; }
+.browser-shell.is-browser-fullscreen .frame-title-row strong { color: #fff; }
+.browser-shell.is-browser-fullscreen .frame-title-row small { color: #aab6c8; }
+.browser-shell.is-browser-fullscreen .frame-title-actions button { border-color: #ffffff2b; background: #ffffff14; color: #fff; }
+.browser-shell.is-browser-fullscreen .browser-frame { flex: 1 1 auto; min-height: 0; max-height: none; border-radius: 10px; }
+.browser-shell.is-browser-fullscreen .browser-frame img { max-height: none; }
 @keyframes browser-spin { to { transform: rotate(360deg); } }
 @media (max-width: 680px) {
   .browser-intro { align-items: start; margin-top: 26px; }
@@ -60,6 +77,8 @@ button:disabled, select:disabled { cursor: wait; opacity: .58; }
   #browser-address-form { grid-column: 1 / -1; width: 100%; min-height: 48px; }
   #browser-address { font-size: 16px; }
   .browser-frame { min-height: 360px; }
+  .frame-title-actions { gap: 6px; }
+  .frame-title-actions button { padding-inline: 10px; }
   .quick-scroll { display: grid; }
   .browser-input-card button { padding-inline: 13px; }
 }

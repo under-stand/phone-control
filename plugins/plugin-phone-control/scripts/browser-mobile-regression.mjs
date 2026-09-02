@@ -98,6 +98,12 @@ try {
     buttonWidth: element.querySelector("button")?.getBoundingClientRect().width || 0,
   }));
   assert.ok(addressLayout.formWidth > 0 && addressLayout.inputWidth > 0 && addressLayout.buttonWidth >= 58);
+  assert.equal(await page.locator("#expand-browser").textContent(), "横向全屏");
+  await page.locator("#expand-browser").click();
+  await page.locator("body.browser-fullscreen").waitFor();
+  assert.equal(await page.locator("#expand-browser").textContent(), "退出全屏");
+  await page.locator("#expand-browser").click();
+  await page.locator("body:not(.browser-fullscreen)").waitFor();
   await responding;
   process.stdout.write("Browser mobile regression passed.\n");
 } finally {

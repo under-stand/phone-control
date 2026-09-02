@@ -15,6 +15,7 @@ const captureTimers = new Map();
 let running = false;
 let selectedTabId = null;
 let lastFrame = null;
+let captureQueue = Promise.resolve();
 let connection = { connected: false, error: null, lastSeenAt: null };
 let activeServiceUrl = null;
 let discoveryPromise = null;
@@ -189,7 +190,10 @@ async function capture(tab = null) {
   const viewport = metrics.cssVisualViewport || metrics.visualViewport || {};
   const shot = await command(target.id, "Page.captureScreenshot", {
     format: "jpeg",
-    quality: 65,
+    // The remote page is primarily text. A slightly smaller JPEG keeps the
+    // frame refresh responsive over a phone/Tailscale connection while still
+    // leaving controls readable.
+    quality: 55,
     fromSurface: true,
     captureBeyondViewport: false,
     optimizeForSpeed: true,
@@ -227,21 +231,30 @@ async function publishSnapshot({ includeFrame = true } = {}) {
   });
 }
 
+function enqueueCapture(tabId, { includeFrame = true } = {}) {
+  const task = captureQueue.then(async () => {
+    if (tabId !== selectedTabId) return null;
+    const tab = await chrome.tabs.get(tabId);
+    if (!supportedTab(tab)) return null;
+    if (includeFrame) await capture(tab);
+    await publishSnapshot({ includeFrame });
+    return includeFrame ? lastFrame : null;
+  });
+  // Keep later captures moving even when a tab closes or a debugger command
+  // times out. Callers that need the result still receive the original task.
+  captureQueue = task.catch(() => {});
+  return task;
+}
+
 function scheduleCapture(tabId, { includeFrame = true } = {}) {
   const previous = captureTimers.get(tabId);
   if (previous) clearTimeout(previous);
   const timer = setTimeout(async () => {
     captureTimers.delete(tabId);
-    if (tabId !== selectedTabId) return;
-    try {
-      const tab = await chrome.tabs.get(tabId);
-      if (!supportedTab(tab)) return;
-      if (includeFrame) await capture(tab);
-      await publishSnapshot({ includeFrame });
-    } catch {
+    void enqueueCapture(tabId, { includeFrame }).catch(() => {
       // The tab may have closed or navigated to a protected Chrome page.
       // The regular heartbeat will report the next healthy snapshot.
-    }
+    });
   }, 350);
   captureTimers.set(tabId, timer);
 }
@@ -339,10 +352,24 @@ async function execute(action) {
     default:
       throw new Error(`不支持的浏览器操作：${action.type}`);
   }
-  if (action.type !== "screenshot") await delay(300);
+  if (action.type === "screenshot") {
+    const frame = await enqueueCapture(tab.id, { includeFrame: true });
+    if (!frame) throw new Error("当前标签页已切换，请稍后重试");
+    return { result: { ok: true, frameId: frame.frameId }, snapshot: await snapshot() };
+  }
+
+  // A command acknowledgement should not wait for a JPEG upload. Keep the
+  // current frame for direct interactions so the phone stays usable while a
+  // replacement is captured; navigation/tab changes clear it immediately.
+  await delay(100);
   tab = await chrome.tabs.get(selectedTabId || tab.id);
-  const frame = await capture(tab);
-  return { result: { ok: true, frameId: frame.frameId }, snapshot: await snapshot() };
+  const keepFrame = ["tap", "scroll", "insertText", "key"].includes(action.type) && Boolean(lastFrame);
+  if (!keepFrame) lastFrame = null;
+  scheduleCapture(tab.id);
+  return {
+    result: { ok: true, frameId: keepFrame ? lastFrame.frameId : null },
+    snapshot: await snapshot({ includeFrame: keepFrame }),
+  };
 }
 
 async function hello() {

@@ -9,8 +9,8 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=76";
-import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=76";
+} from "./lib/format.js?v=77";
+import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=77";
 
 function storedCompletionKeys() {
   try {
