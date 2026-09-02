@@ -97,6 +97,10 @@ export class BrowserExtensionBroker {
     this.client.lastSeenAt = this.now();
   }
 
+  originFor(clientId) {
+    return this.client?.clientId === clientId ? this.client.origin : null;
+  }
+
   online() {
     return Boolean(this.client && this.now() - this.client.lastSeenAt <= this.onlineTtlMs);
   }

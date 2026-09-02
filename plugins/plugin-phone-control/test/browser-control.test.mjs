@@ -63,6 +63,8 @@ export const tests = [
       const invoked = broker.invoke({ type: "listTabs", clientActionId: "action-1" });
       const delivery = await broker.poll("chrome-one", EXTENSION_ORIGIN, 10);
       assert.equal(delivery.command.action.type, "listTabs");
+      assert.equal(broker.originFor("chrome-one"), EXTENSION_ORIGIN);
+      assert.equal(broker.originFor("unknown"), null);
       broker.complete("chrome-one", EXTENSION_ORIGIN, {
         commandId: delivery.command.id,
         ok: true,

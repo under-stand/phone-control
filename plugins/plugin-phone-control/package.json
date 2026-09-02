@@ -1,6 +1,6 @@
 {
   "name": "plugin-phone-control",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "description": "Local-first mobile task and Chrome control dashboard for Codex Desktop and CLI.",
   "type": "module",
   "private": true,

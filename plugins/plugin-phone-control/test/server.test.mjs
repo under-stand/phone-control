@@ -919,7 +919,7 @@ export const tests = [
         assert.equal(detail.body.session.control.canAnswer, true);
         const status = await request({ port: started.port, pathname: "/api/status", headers: { cookie } });
         assert.equal(status.status, 200);
-        assert.equal(status.body.version, "0.10.2");
+        assert.equal(status.body.version, "0.10.3");
         assert.equal(status.body.codexHome, undefined);
         assert.equal(status.body.device, undefined);
         assert.equal(status.body.appServer.threadStates, undefined);

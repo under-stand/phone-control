@@ -10,6 +10,9 @@ const EXTENSION_HEADERS = {
   origin: EXTENSION_ORIGIN,
   "x-phone-control-browser-extension": "1",
 };
+const EXTENSION_HEADERS_WITHOUT_ORIGIN = {
+  "x-phone-control-browser-extension": "1",
+};
 
 function request({ port, pathname, method = "GET", headers = {}, body = null }) {
   const payload = body == null ? null : Buffer.from(JSON.stringify(body));
@@ -132,14 +135,14 @@ export const tests = [{
       const delivery = await request({
         port: started.port,
         pathname: "/api/internal/browser/commands?clientId=chrome-test&wait=10",
-        headers: EXTENSION_HEADERS,
+        headers: EXTENSION_HEADERS_WITHOUT_ORIGIN,
       });
       assert.equal(delivery.body.command.action.type, "listTabs");
       const completion = await request({
         port: started.port,
         pathname: "/api/internal/browser/results",
         method: "POST",
-        headers: EXTENSION_HEADERS,
+        headers: EXTENSION_HEADERS_WITHOUT_ORIGIN,
         body: {
           clientId: "chrome-test",
           commandId: delivery.body.command.id,

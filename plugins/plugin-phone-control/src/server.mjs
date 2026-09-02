@@ -111,11 +111,11 @@ function browserExtensionOrigin(request) {
   return /^chrome-extension:\/\/[a-p]{32}$/.test(origin) ? origin : null;
 }
 
-function isBrowserExtensionRequest(request) {
+function isBrowserExtensionRequest(request, fallbackOrigin = null) {
   return Boolean(
     isLoopbackAddress(request.socket.remoteAddress)
     && request.headers["x-phone-control-browser-extension"] === "1"
-    && browserExtensionOrigin(request),
+    && (browserExtensionOrigin(request) || fallbackOrigin),
   );
 }
 
@@ -881,18 +881,19 @@ export async function createPhoneControlServer({
       }
 
       if (request.method === "POST" && url.pathname === "/api/internal/browser/snapshot") {
-        if (!isBrowserExtensionRequest(request)) {
+        const body = await readJson(request, MAX_BROWSER_BODY);
+        const origin = browserExtensionOrigin(request) || browser.originFor(body?.clientId);
+        if (!isBrowserExtensionRequest(request, origin)) {
           json(response, 403, { error: "Browser extension snapshots are local-only" });
           return;
         }
-        const body = await readJson(request, MAX_BROWSER_BODY);
         if (!body || typeof body.snapshot !== "object" || Array.isArray(body.snapshot)) {
           json(response, 400, { error: "Invalid browser snapshot" });
           return;
         }
         const snapshot = browser.updateSnapshot(
           body.clientId,
-          browserExtensionOrigin(request),
+          origin,
           body.snapshot,
         );
         json(response, 202, { ok: true, browser: snapshot });
@@ -900,13 +901,15 @@ export async function createPhoneControlServer({
       }
 
       if (request.method === "GET" && url.pathname === "/api/internal/browser/commands") {
-        if (!isBrowserExtensionRequest(request)) {
+        const clientId = url.searchParams.get("clientId");
+        const origin = browserExtensionOrigin(request) || browser.originFor(clientId);
+        if (!isBrowserExtensionRequest(request, origin)) {
           json(response, 403, { error: "Browser extension polling is local-only" });
           return;
         }
         const delivery = await browser.poll(
-          url.searchParams.get("clientId"),
-          browserExtensionOrigin(request),
+          clientId,
+          origin,
           url.searchParams.get("wait"),
         );
         json(response, 200, delivery);
@@ -914,12 +917,13 @@ export async function createPhoneControlServer({
       }
 
       if (request.method === "POST" && url.pathname === "/api/internal/browser/results") {
-        if (!isBrowserExtensionRequest(request)) {
+        const body = await readJson(request, MAX_BROWSER_BODY);
+        const origin = browserExtensionOrigin(request) || browser.originFor(body?.clientId);
+        if (!isBrowserExtensionRequest(request, origin)) {
           json(response, 403, { error: "Browser extension results are local-only" });
           return;
         }
-        const body = await readJson(request, MAX_BROWSER_BODY);
-        const accepted = browser.complete(body.clientId, browserExtensionOrigin(request), body);
+        const accepted = browser.complete(body.clientId, origin, body);
         json(response, accepted ? 202 : 404, accepted ? { ok: true } : { error: "Browser command not found" });
         return;
       }

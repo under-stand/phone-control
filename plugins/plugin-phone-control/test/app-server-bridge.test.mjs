@@ -297,7 +297,7 @@ export const tests = [
       try {
         assert.equal(await bridge.start(), true);
         const initialize = harness.sent.find((message) => message.method === "initialize");
-        assert.equal(initialize.params.clientInfo.version, "0.10.2");
+        assert.equal(initialize.params.clientInfo.version, "0.10.3");
         assert.equal(initialize.params.capabilities.experimentalApi, true);
         assert.ok(initialize.params.capabilities.optOutNotificationMethods.includes("item/agentMessage/delta"));
         assert.ok(initialize.params.capabilities.optOutNotificationMethods.includes("item/completed"));
