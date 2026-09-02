@@ -1,4 +1,4 @@
-import { mapPointerToViewport } from "./lib/browser-frame-controls.js?v=77";
+import { mapPointerToViewport } from "./lib/browser-frame-controls.js?v=78";
 
 const elements = {
   connection: document.querySelector("#browser-connection"),
@@ -15,6 +15,7 @@ const elements = {
   addressForm: document.querySelector("#browser-address-form"),
   address: document.querySelector("#browser-address"),
   capture: document.querySelector("#capture-browser"),
+  stream: document.querySelector("#toggle-browser-stream"),
   expand: document.querySelector("#expand-browser"),
   frame: document.querySelector("#browser-frame"),
   image: document.querySelector("#browser-frame-image"),
@@ -42,6 +43,7 @@ let initialSyncInFlight = false;
 let frameStatusText = "正在取得网页画面";
 let browserFullscreen = false;
 let refreshTimer = null;
+let browserStream = null;
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -92,6 +94,41 @@ function setBrowserFullscreen(value) {
   elements.shell.classList.toggle("is-browser-fullscreen", browserFullscreen);
   elements.expand.textContent = browserFullscreen ? "退出全屏" : "横向全屏";
   elements.expand.setAttribute("aria-label", browserFullscreen ? "退出横向全屏" : "横向全屏查看网页");
+}
+
+function closeBrowserStream() {
+  browserStream?.close();
+  browserStream = null;
+}
+
+function syncBrowserStream() {
+  const shouldStream = Boolean(browser?.connected && browser?.streaming);
+  if (!shouldStream) {
+    closeBrowserStream();
+    return;
+  }
+  if (browserStream || !("EventSource" in globalThis)) return;
+  try {
+    browserStream = new EventSource("/api/browser/stream");
+    browserStream.addEventListener("frame", (event) => {
+      if (!browser?.streaming) return;
+      try {
+        const payload = JSON.parse(event.data);
+        if (!payload.frame?.frameId || !payload.frame.dataUrl) return;
+        browser.frame = payload.frame;
+        render();
+      } catch {
+        // Ignore a malformed frame and keep the stream available for the next
+        // event instead of taking down the browser control page.
+      }
+    });
+    browserStream.addEventListener("error", () => {
+      // EventSource reconnects automatically. The normal status refresh keeps
+      // the button state correct if the extension stops streaming meanwhile.
+    });
+  } catch {
+    browserStream = null;
+  }
 }
 
 async function toggleBrowserFullscreen() {
@@ -149,10 +186,15 @@ function render() {
   elements.console.hidden = !connected;
   if (!connected) {
     elements.image.hidden = true;
+    syncBrowserStream();
     return;
   }
 
   const selected = String(browser.activeTabId ?? "");
+  const streaming = Boolean(browser.streaming);
+  elements.stream.textContent = streaming ? "停止实时" : "实时画面";
+  elements.stream.dataset.active = streaming ? "true" : "false";
+  elements.stream.setAttribute("aria-label", streaming ? "停止实时画面" : "开启实时画面");
   const options = (browser.tabs || []).map((tab) => {
     const option = document.createElement("option");
     option.value = String(tab.id);
@@ -176,13 +218,14 @@ function render() {
     elements.placeholder.hidden = false;
     setFrameStatus(frameStatusText);
   }
+  syncBrowserStream();
 }
 
 function updateFrame(frame) {
   const current = elements.image.dataset.frameId;
-  if (current === frame.frameId && !elements.image.hidden) return;
+  if (current === frame.frameId && !elements.image.hidden && !frame.dataUrl) return;
   clearTimeout(frameLoadTimer);
-  elements.placeholder.hidden = false;
+  elements.placeholder.hidden = !elements.image.hidden && Boolean(frame.dataUrl);
   setFrameStatus("正在加载网页画面");
   elements.image.onload = () => {
     clearTimeout(frameLoadTimer);
@@ -198,7 +241,7 @@ function updateFrame(frame) {
     showError(new Error("网页画面已过期，请点“刷新画面”重试"));
   };
   elements.image.dataset.frameId = frame.frameId;
-  elements.image.src = `/api/browser/frame?frameId=${encodeURIComponent(frame.frameId)}&t=${Date.now()}`;
+  elements.image.src = frame.dataUrl || `/api/browser/frame?frameId=${encodeURIComponent(frame.frameId)}&t=${Date.now()}`;
   frameLoadTimer = setTimeout(() => {
     elements.image.hidden = true;
     elements.placeholder.hidden = false;
@@ -365,6 +408,9 @@ elements.back.addEventListener("click", () => perform({ type: "back" }).catch(()
 elements.forward.addEventListener("click", () => perform({ type: "forward" }).catch(() => {}));
 elements.reload.addEventListener("click", () => perform({ type: "reload" }).catch(() => {}));
 elements.capture.addEventListener("click", () => perform({ type: "screenshot" }).catch(() => {}));
+elements.stream.addEventListener("click", () => {
+  perform({ type: browser?.streaming ? "stopStream" : "startStream" }).catch(() => {});
+});
 elements.expand.addEventListener("click", () => toggleBrowserFullscreen().catch(() => {}));
 elements.scrollUp.addEventListener("click", () => performFrameAction({ type: "scroll", deltaY: -560 }).catch(showError));
 elements.scrollDown.addEventListener("click", () => performFrameAction({ type: "scroll", deltaY: 560 }).catch(showError));
@@ -425,7 +471,10 @@ elements.frame.addEventListener("pointerup", (event) => {
 });
 
 elements.frame.addEventListener("pointercancel", () => { pointerStart = null; });
-window.addEventListener("pagehide", releaseControl);
+window.addEventListener("pagehide", () => {
+  closeBrowserStream();
+  releaseControl();
+});
 document.addEventListener("fullscreenchange", () => {
   if (!document.fullscreenElement && browserFullscreen) {
     setBrowserFullscreen(false);

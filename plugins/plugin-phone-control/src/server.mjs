@@ -461,6 +461,7 @@ export async function createPhoneControlServer({
   scanner.on("warning", (error) => store.emit("warning", error));
 
   const sseClients = new Set();
+  const browserStreamClients = new Set();
   const visibleSessionIds = new Set(store.list({ taskKind: "user" }).map((session) => session.id));
   const sessionPayload = (session, deviceId = null) => ({
     ...session,
@@ -468,6 +469,41 @@ export async function createPhoneControlServer({
   });
   const visibleSessions = (deviceId = null) => store.list({ taskKind: "user" })
     .map((session) => sessionPayload(session, deviceId));
+  const queueBrowserFrame = (client, frame) => {
+    if (!frame || client.response.destroyed || !browserStreamClients.has(client)) return;
+    client.pendingFrame = frame;
+    if (client.flushing) return;
+    client.flushing = true;
+    const flush = () => {
+      if (client.response.destroyed || !browserStreamClients.has(client)) {
+        client.flushing = false;
+        client.pendingFrame = null;
+        return;
+      }
+      const next = client.pendingFrame;
+      client.pendingFrame = null;
+      if (!next) {
+        client.flushing = false;
+        return;
+      }
+      try {
+        const { dataUrl, ...metadata } = next;
+        const payload = { frame: { ...metadata, dataUrl } };
+        const writable = client.response.write(`event: frame\ndata: ${JSON.stringify(payload)}\n\n`);
+        if (writable) setImmediate(flush);
+        else client.response.once("drain", flush);
+      } catch {
+        browserStreamClients.delete(client);
+        client.response.destroy();
+        client.flushing = false;
+      }
+    };
+    flush();
+  };
+  const publishBrowserFrame = (frame) => {
+    for (const client of browserStreamClients) queueBrowserFrame(client, frame);
+  };
+  browser.on?.("frame", publishBrowserFrame);
   let pushReady = false;
   let serviceReady = false;
   const publishSession = (session) => {
@@ -982,6 +1018,21 @@ export async function createPhoneControlServer({
           "x-browser-page-generation": String(frame.pageGeneration),
         });
         response.end(payload);
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/browser/stream") {
+        response.writeHead(200, {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-cache, no-transform",
+          connection: "keep-alive",
+          "x-accel-buffering": "no",
+        });
+        response.write("retry: 1500\n\n");
+        const client = { response, deviceId: device.id, pendingFrame: null, flushing: false };
+        browserStreamClients.add(client);
+        request.once("close", () => browserStreamClients.delete(client));
+        queueBrowserFrame(client, browser.frameImage());
         return;
       }
 
@@ -1770,6 +1821,9 @@ export async function createPhoneControlServer({
     if (outboxTimer) clearInterval(outboxTimer);
     for (const client of sseClients) client.response.end();
     sseClients.clear();
+    for (const client of browserStreamClients) client.response.end();
+    browserStreamClients.clear();
+    browser.off?.("frame", publishBrowserFrame);
     await store.flush();
     await store.compact();
     await devices.flush();

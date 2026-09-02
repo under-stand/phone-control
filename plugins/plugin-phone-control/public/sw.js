@@ -1,14 +1,14 @@
-const CACHE = "phone-control-v77";
+const CACHE = "phone-control-v78";
 const ASSETS = [
   "/",
   "/browser.html",
-  "/styles.css?v=77",
-  "/app.js?v=77",
-  "/browser.css?v=77",
-  "/browser.js?v=77",
-  "/lib/format.js?v=77",
-  "/lib/conversation.js?v=77",
-  "/lib/browser-frame-controls.js?v=77",
+  "/styles.css?v=78",
+  "/app.js?v=78",
+  "/browser.css?v=78",
+  "/browser.js?v=78",
+  "/lib/format.js?v=78",
+  "/lib/conversation.js?v=78",
+  "/lib/browser-frame-controls.js?v=78",
   "/icon.svg",
   "/manifest.webmanifest",
   "/icons/image.svg",

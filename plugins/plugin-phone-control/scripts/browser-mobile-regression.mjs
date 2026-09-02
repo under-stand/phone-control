@@ -44,7 +44,7 @@ let chrome = null;
 try {
   const started = await runtime.start();
   const responding = (async () => {
-    for (let index = 0; index < 2; index += 1) {
+    for (let index = 0; index < 4; index += 1) {
       let delivery = await broker.poll("chrome-visual", EXTENSION_ORIGIN, 20_000);
       // A slow browser launch may let the first long poll expire before the
       // page's module script reaches its initial listTabs action. Retry once
@@ -59,7 +59,8 @@ try {
         active: true,
         supported: true,
       }];
-      const frame = delivery.command.action.type === "screenshot" ? {
+      const streaming = delivery.command.action.type === "startStream";
+      const frame = ["screenshot", "startStream", "stopStream"].includes(delivery.command.action.type) ? {
         frameId: "visual-frame",
         pageGeneration: 1,
         tabId: "7",
@@ -73,7 +74,7 @@ try {
         commandId: delivery.command.id,
         ok: true,
         result: { ok: true },
-        snapshot: { tabs, activeTabId: "7", frame },
+        snapshot: { tabs, activeTabId: "7", frame, streaming },
       });
     }
   })();
@@ -98,6 +99,26 @@ try {
     buttonWidth: element.querySelector("button")?.getBoundingClientRect().width || 0,
   }));
   assert.ok(addressLayout.formWidth > 0 && addressLayout.inputWidth > 0 && addressLayout.buttonWidth >= 58);
+  await page.locator("#toggle-browser-stream").click();
+  await page.waitForFunction(() => document.querySelector("#toggle-browser-stream")?.textContent === "停止实时");
+  broker.updateSnapshot("chrome-visual", EXTENSION_ORIGIN, {
+    tabs: [{ id: "7", windowId: "1", title: "Example", url: "https://example.com/", active: true, supported: true }],
+    activeTabId: "7",
+    streaming: true,
+    frame: {
+      frameId: "stream-live",
+      pageGeneration: 1,
+      tabId: "7",
+      url: "https://example.com/",
+      title: "Example",
+      width: 800,
+      height: 600,
+      dataUrl: FRAME_IMAGE,
+    },
+  });
+  await page.waitForFunction(() => document.querySelector("#browser-frame-image")?.src.startsWith("data:image/"));
+  await page.locator("#toggle-browser-stream").click();
+  await page.waitForFunction(() => document.querySelector("#toggle-browser-stream")?.textContent === "实时画面");
   assert.equal(await page.locator("#expand-browser").textContent(), "横向全屏");
   await page.locator("#expand-browser").click();
   await page.locator("body.browser-fullscreen").waitFor();

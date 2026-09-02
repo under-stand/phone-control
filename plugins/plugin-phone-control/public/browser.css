@@ -18,7 +18,7 @@
 .tab-picker .select-shell { min-width: 0; }
 .tab-picker select { width: 100%; min-height: 46px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); padding: 0 38px 0 12px; color: var(--ink); font: 650 14px/1.2 var(--sans); appearance: none; }
 .tab-actions { display: flex; align-items: end; gap: 8px; }
-.tab-actions button, .nav-buttons > button, .quick-scroll button, #capture-browser, #expand-browser { min-height: 46px; padding: 0 14px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); color: var(--ink); font-weight: 750; cursor: pointer; }
+.tab-actions button, .nav-buttons > button, .quick-scroll button, #capture-browser, #expand-browser, #toggle-browser-stream { min-height: 46px; padding: 0 14px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); color: var(--ink); font-weight: 750; cursor: pointer; }
 .tab-actions .danger-quiet { color: #9b3c2e; }
 .nav-buttons { grid-column: 1 / -1; display: grid; grid-template-columns: 48px 48px 48px minmax(0,1fr); gap: 8px; }
 .nav-buttons > button { padding: 0; font-size: 22px; }
@@ -31,6 +31,7 @@
 .frame-title-actions { display: flex; align-items: center; flex: 0 0 auto; gap: 8px; }
 .frame-title-actions button { white-space: nowrap; }
 .frame-expand { color: var(--violet); }
+.frame-stream[data-active="true"] { border-color: rgba(44, 145, 91, .35); background: rgba(44, 145, 91, .1); color: #267a4b; }
 .frame-title-row strong, .frame-title-row small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .frame-title-row strong { font: 750 17px/1.2 var(--display); }
 .frame-title-row small { max-width: 70vw; margin-top: 4px; color: var(--muted); font-size: 11px; }
@@ -64,6 +65,7 @@ button:disabled, select:disabled { cursor: wait; opacity: .58; }
 .browser-shell.is-browser-fullscreen .frame-title-row strong { color: #fff; }
 .browser-shell.is-browser-fullscreen .frame-title-row small { color: #aab6c8; }
 .browser-shell.is-browser-fullscreen .frame-title-actions button { border-color: #ffffff2b; background: #ffffff14; color: #fff; }
+.browser-shell.is-browser-fullscreen .frame-stream[data-active="true"] { border-color: #8ce2ad; background: #ffffff24; color: #d9ffe6; }
 .browser-shell.is-browser-fullscreen .browser-frame { flex: 1 1 auto; min-height: 0; max-height: none; border-radius: 10px; }
 .browser-shell.is-browser-fullscreen .browser-frame img { max-height: none; }
 @keyframes browser-spin { to { transform: rotate(360deg); } }

@@ -91,6 +91,8 @@ export function validateBrowserAction(action) {
     case "newTab":
     case "screenshot":
     case "listTabs":
+    case "startStream":
+    case "stopStream":
       return base;
     case "selectTab":
     case "closeTab":

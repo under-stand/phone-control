@@ -7,6 +7,9 @@ import {
 const DEFAULT_SERVICE_URL = `http://127.0.0.1:${DEFAULT_SERVICE_PORT}`;
 const SERVICE_DISCOVERY_RETRY_MS = 3_000;
 const DEBUGGER_COMMAND_TIMEOUT_MS = 8_000;
+const STREAM_MAX_WIDTH = 960;
+const STREAM_MAX_HEIGHT = 720;
+const STREAM_QUALITY = 45;
 const COMMAND_LOOP_ALARM = "phone-control-command-loop";
 const EXTENSION_HEADER = { "x-phone-control-browser-extension": "1" };
 const attachedTabs = new Set();
@@ -16,6 +19,8 @@ let running = false;
 let selectedTabId = null;
 let lastFrame = null;
 let captureQueue = Promise.resolve();
+let screencastTabId = null;
+let streamPublishing = false;
 let connection = { connected: false, error: null, lastSeenAt: null };
 let activeServiceUrl = null;
 let discoveryPromise = null;
@@ -219,6 +224,7 @@ async function snapshot({ includeFrame = true } = {}) {
     tabs: tabs.map(publicTab),
     activeTabId: selectedTabId == null ? null : String(selectedTabId),
     frame: includeFrame ? lastFrame : null,
+    streaming: screencastTabId === selectedTabId,
   };
 }
 
@@ -259,6 +265,66 @@ function scheduleCapture(tabId, { includeFrame = true } = {}) {
   captureTimers.set(tabId, timer);
 }
 
+async function startScreencast(tab) {
+  if (!tab || !supportedTab(tab)) throw new Error("Chrome 内部页面不能被远程控制，请选择普通网页");
+  if (screencastTabId === tab.id) return;
+  if (screencastTabId != null) await stopScreencast();
+  screencastTabId = tab.id;
+  try {
+    await command(tab.id, "Page.startScreencast", {
+      format: "jpeg",
+      quality: STREAM_QUALITY,
+      maxWidth: STREAM_MAX_WIDTH,
+      maxHeight: STREAM_MAX_HEIGHT,
+      // Three out of every four compositor frames is enough for a readable
+      // remote video while keeping the loopback JSON upload bounded.
+      everyNthFrame: 4,
+      maxFramesInFlight: 1,
+      sendLastFrame: true,
+    });
+  } catch (error) {
+    screencastTabId = null;
+    throw error;
+  }
+}
+
+async function stopScreencast(tabId = screencastTabId) {
+  if (!Number.isInteger(tabId)) return;
+  if (screencastTabId === tabId) screencastTabId = null;
+  await command(tabId, "Page.stopScreencast").catch(() => {});
+}
+
+async function handleScreencastFrame(tabId, params = {}) {
+  if (tabId !== screencastTabId || typeof params.data !== "string" || !params.data) return;
+  await command(tabId, "Page.screencastFrameAck", { sessionId: params.sessionId }).catch(() => {});
+  if (tabId !== screencastTabId || streamPublishing) return;
+  streamPublishing = true;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tabId !== selectedTabId || !supportedTab(tab)) return;
+    const metadata = params.metadata || {};
+    const width = Math.max(1, Number(metadata.deviceWidth || lastFrame?.width || tab.width || 1));
+    const height = Math.max(1, Number(metadata.deviceHeight || lastFrame?.height || tab.height || 1));
+    lastFrame = {
+      frameId: crypto.randomUUID(),
+      pageGeneration: pageGenerations.get(tabId) || 0,
+      tabId: String(tabId),
+      url: tabUrl(tab) || "about:blank",
+      title: tab.title || tabUrl(tab) || "未命名标签页",
+      width,
+      height,
+      dataUrl: `data:image/jpeg;base64,${params.data}`,
+      capturedAt: new Date().toISOString(),
+    };
+    await publishSnapshot();
+  } catch {
+    // The tab may have closed or the local service may be restarting. The
+    // next screencast frame or heartbeat will recover the stream.
+  } finally {
+    streamPublishing = false;
+  }
+}
+
 async function activateTab(tabId) {
   const numericId = Number(tabId);
   const tab = await chrome.tabs.get(numericId);
@@ -294,6 +360,12 @@ async function execute(action) {
   switch (action.type) {
     case "listTabs":
       return { result: { ok: true }, snapshot: await snapshot({ includeFrame: false }) };
+    case "startStream":
+      await startScreencast(tab);
+      return { result: { ok: true }, snapshot: await snapshot() };
+    case "stopStream":
+      await stopScreencast();
+      return { result: { ok: true }, snapshot: await snapshot() };
     case "selectTab":
       tab = await activateTab(action.tabId);
       break;
@@ -431,6 +503,11 @@ async function runLoop() {
   }
 }
 
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  if (method !== "Page.screencastFrame" || !Number.isInteger(source.tabId)) return;
+  void handleScreencastFrame(source.tabId, params);
+});
+
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === "loading") {
     pageGenerations.set(tabId, (pageGenerations.get(tabId) || 0) + 1);
@@ -446,6 +523,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   if (!Number.isInteger(tabId)) return;
+  if (screencastTabId != null && screencastTabId !== tabId) {
+    void stopScreencast(screencastTabId).catch(() => {});
+  }
   selectedTabId = tabId;
   lastFrame = null;
   void chrome.storage.local.set({ selectedTabId });
@@ -458,6 +538,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (timer) clearTimeout(timer);
   captureTimers.delete(tabId);
   attachedTabs.delete(tabId);
+  if (screencastTabId === tabId) screencastTabId = null;
   pageGenerations.delete(tabId);
   if (tabId === selectedTabId) {
     selectedTabId = null;
@@ -473,6 +554,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 chrome.debugger.onDetach.addListener((source) => {
   attachedTabs.delete(source.tabId);
+  if (screencastTabId === source.tabId) screencastTabId = null;
   if (source.tabId === selectedTabId) {
     lastFrame = null;
     void publishSnapshot({ includeFrame: false }).catch(() => {});

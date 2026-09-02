@@ -25,6 +25,14 @@ export const tests = [
         pageGeneration: 1,
         text: "  保留空格  ",
       }).text, "  保留空格  ");
+      assert.deepEqual(validateBrowserAction({ type: "startStream", clientActionId: "a-5" }), {
+        type: "startStream",
+        clientActionId: "a-5",
+      });
+      assert.deepEqual(validateBrowserAction({ type: "stopStream", clientActionId: "a-6" }), {
+        type: "stopStream",
+        clientActionId: "a-6",
+      });
       assert.throws(
         () => validateBrowserAction({ type: "navigate", clientActionId: "a-3", url: "file:///etc/passwd" }),
         (error) => error.code === "invalid_action" && error.statusCode === 400,
@@ -117,6 +125,32 @@ export const tests = [
         }),
         (error) => error.code === "coordinate_out_of_bounds" && error.statusCode === 400,
       );
+      broker.close();
+    },
+  },
+  {
+    name: "publishes the newest browser frame to realtime subscribers",
+    run() {
+      const broker = new BrowserExtensionBroker();
+      broker.connect({ clientId: "chrome-one", origin: EXTENSION_ORIGIN });
+      const frames = [];
+      broker.on("frame", (frame) => frames.push(frame));
+      broker.updateSnapshot("chrome-one", EXTENSION_ORIGIN, {
+        streaming: true,
+        frame: {
+          frameId: "stream-frame",
+          pageGeneration: 1,
+          tabId: "2",
+          url: "https://example.com/",
+          width: 800,
+          height: 600,
+          dataUrl: "data:image/jpeg;base64,AA==",
+        },
+      });
+      assert.equal(broker.status().streaming, true);
+      assert.equal(frames.length, 1);
+      assert.equal(frames[0].frameId, "stream-frame");
+      assert.equal(frames[0].dataUrl, "data:image/jpeg;base64,AA==");
       broker.close();
     },
   },

@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { randomBytes } from "node:crypto";
 import { BrowserActionError, assertCurrentBrowserFrame } from "./browser-action.mjs";
 
@@ -35,12 +36,13 @@ function publicTab(tab) {
   };
 }
 
-export class BrowserExtensionBroker {
+export class BrowserExtensionBroker extends EventEmitter {
   constructor({
     now = () => Date.now(),
     commandTimeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
     onlineTtlMs = DEFAULT_ONLINE_TTL_MS,
   } = {}) {
+    super();
     this.now = now;
     this.commandTimeoutMs = commandTimeoutMs;
     this.onlineTtlMs = onlineTtlMs;
@@ -50,6 +52,7 @@ export class BrowserExtensionBroker {
     this.pending = new Map();
     this.waitingPoll = null;
     this.frame = null;
+    this.streaming = false;
     this.tabs = [];
     this.activeTabId = null;
   }
@@ -71,6 +74,7 @@ export class BrowserExtensionBroker {
       this.failPending("Browser extension reconnected");
       this.queue = [];
       this.frame = null;
+      this.streaming = false;
       this.tabs = [];
       this.activeTabId = null;
     }
@@ -117,6 +121,7 @@ export class BrowserExtensionBroker {
       tabs: this.tabs,
       activeTabId: this.activeTabId,
       frame: this.publicFrame(),
+      streaming: this.streaming,
       control: lease?.status(deviceId) || { held: false, owner: null, expiresAt: null },
     };
   }
@@ -130,6 +135,7 @@ export class BrowserExtensionBroker {
   updateSnapshot(clientId, origin, snapshot = {}) {
     this.touch(clientId, origin);
     if (Array.isArray(snapshot.tabs)) this.tabs = snapshot.tabs.slice(0, 256).map(publicTab).filter(Boolean);
+    if (Object.hasOwn(snapshot, "streaming")) this.streaming = Boolean(snapshot.streaming);
     if (Object.hasOwn(snapshot, "activeTabId")) {
       this.activeTabId = snapshot.activeTabId == null ? null : shortText(String(snapshot.activeTabId), null, 128);
     }
@@ -171,6 +177,7 @@ export class BrowserExtensionBroker {
       dataUrl: frame.dataUrl,
       receivedAt: new Date(this.now()).toISOString(),
     };
+    this.emit("frame", this.frame);
   }
 
   frameImage() {
@@ -261,6 +268,7 @@ export class BrowserExtensionBroker {
     this.client = null;
     this.pinnedOrigin = null;
     this.frame = null;
+    this.streaming = false;
     this.tabs = [];
     this.activeTabId = null;
   }
