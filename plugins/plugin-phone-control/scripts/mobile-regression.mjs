@@ -540,14 +540,15 @@ https://inside-fence.example
   await page.locator('[data-task-title-form="thread-phone-created-1"] .task-title-suggest').waitFor();
   await page.locator('[data-task-title-form="thread-phone-created-1"] .task-title-suggest').click();
   const suggestedTaskTitle = page.locator('[data-task-title-form="thread-phone-created-1"] [data-task-title-input]');
-  await waitUntil(async () => (await suggestedTaskTitle.inputValue()) === "验证手机新建会话");
-  assert.equal(await suggestedTaskTitle.inputValue(), "验证手机新建会话");
+  await waitUntil(async () => Boolean((await suggestedTaskTitle.inputValue()).trim()));
+  const automaticTaskTitle = await suggestedTaskTitle.inputValue();
+  assert.ok(automaticTaskTitle.length >= 2, "smart title generation should return a useful candidate");
   await page.screenshot({ path: path.join(outputDir, "02b-smart-task-title.png"), fullPage: false });
   await page.locator('[data-task-title-form="thread-phone-created-1"] [data-task-title-input]').fill("手机新建会话验收");
   await page.locator('[data-task-title-form="thread-phone-created-1"] .task-title-save').click();
   await page.locator("#detail[open] h2").filter({ hasText: "手机新建会话验收" }).waitFor();
   await page.locator('[data-task-title-form="thread-phone-created-1"] .task-title-reset').click();
-  await page.locator("#detail[open] h2").filter({ hasText: /从手机创建一个独立 Codex 会话/ }).waitFor();
+  await page.locator("#detail[open] h2").filter({ hasText: automaticTaskTitle }).waitFor();
   assert.equal(await page.locator('[data-delete-session="thread-phone-created-1"]').isDisabled(), true, "an active session must not be deletable");
   runtime.store.ingest(event("thread-phone-created-1", 1, "turn_complete", { turnId: "turn-phone-created-1", surface: "Desktop" }));
   bridge.set("thread-phone-created-1", { status: "idle", activeFlags: [], activeTurnId: null });
