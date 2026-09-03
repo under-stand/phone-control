@@ -14,6 +14,15 @@ function turnClosed(turn) {
   return turn?.events.some((event) => ["turn_complete", "session_end", "error", "aborted"].includes(event.kind));
 }
 
+const TERMINAL_KINDS = new Set(["turn_complete", "session_end", "error", "aborted"]);
+
+function sameTimestamp(left, right) {
+  if (!left || !right) return false;
+  const a = Date.parse(left);
+  const b = Date.parse(right);
+  return Number.isFinite(a) && Number.isFinite(b) && a === b;
+}
+
 function turnHasCrossSourcePrompt(turn, event, text) {
   const origin = eventOrigin(event);
   return turn.events.some((candidate) => (
@@ -105,3 +114,61 @@ export function conversationTurns(events = []) {
     .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
 }
 
+// Bind result snapshots to rendered turns using the terminal event first,
+// then the turn id, timestamp, and finally chronological order. The event
+// window is intentionally rolling, and older turns can have synthetic browser
+// ids or lose their turn id during cross-source deduplication; relying on a
+// single id would make the current session show only its newest card.
+export function mapResultsToTurns(turns = [], results = []) {
+  const resultByTurn = new Map();
+  const byTurnId = new Map(turns.map((turn) => [String(turn.id), turn]));
+  const byCompletionEventId = new Map();
+  for (const turn of turns) {
+    for (const event of turn.events || []) {
+      if (TERMINAL_KINDS.has(event.kind) && event.eventId) {
+        byCompletionEventId.set(String(event.eventId), turn);
+      }
+    }
+  }
+  const assigned = new Set();
+  const matched = new Set();
+  const unmatched = [];
+  for (const result of Array.isArray(results) ? results : []) {
+    if (!result || typeof result !== "object") continue;
+    const turn = (result.completionEventId && byCompletionEventId.get(String(result.completionEventId)))
+      || (result.turnId && byTurnId.get(String(result.turnId)))
+      || null;
+    if (turn) {
+      resultByTurn.set(String(turn.id), result);
+      assigned.add(String(turn.id));
+      matched.add(result);
+    } else {
+      unmatched.push(result);
+    }
+  }
+
+  // A terminal event can survive without its event id in older summaries;
+  // completedAt is still emitted by the server and is stable across the
+  // public/private event projection.
+  for (const result of unmatched) {
+    const turn = turns.find((candidate) => !assigned.has(String(candidate.id))
+      && (candidate.events || []).some((event) => TERMINAL_KINDS.has(event.kind) && sameTimestamp(event.at, result.completedAt)));
+    if (!turn) continue;
+    resultByTurn.set(String(turn.id), result);
+    assigned.add(String(turn.id));
+    matched.add(result);
+  }
+
+  // Last-resort pairing keeps legacy payloads useful when both ids and exact
+  // timestamps are missing. Results are oldest-first while turns are newest-
+  // first, so reverse the turns before pairing.
+  const remainingResults = unmatched.filter((result) => !matched.has(result));
+  const remainingTurns = [...turns].reverse().filter((turn) => !assigned.has(String(turn.id)) && turnClosed(turn));
+  remainingResults.forEach((result, index) => {
+    const turn = remainingTurns[index];
+    if (!turn) return;
+    resultByTurn.set(String(turn.id), result);
+    assigned.add(String(turn.id));
+  });
+  return resultByTurn;
+}

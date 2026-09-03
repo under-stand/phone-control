@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { assistantReplyGroups, conversationTurns } from "../public/lib/conversation.js";
+import { assistantReplyGroups, conversationTurns, mapResultsToTurns } from "../public/lib/conversation.js";
 
 function prompt(eventId, at, { origin, turnId = null, text = "修复当前轮次重复问题" } = {}) {
   return {
@@ -89,6 +89,23 @@ export const tests = [
       const groups = assistantReplyGroups(turn);
       assert.equal(groups.finalReply, null);
       assert.deepEqual(groups.updates.map((message) => message.id), ["commentary"]);
+    },
+  },
+  {
+    name: "binds supplemental results by terminal event when server and rendered turn ids differ",
+    run() {
+      const turns = conversationTurns([
+        prompt("prompt-old", "2026-08-28T15:42:40.000Z", { turnId: "rendered-old", text: "第一轮" }),
+        { eventId: "done-old", at: "2026-08-28T15:42:41.000Z", kind: "turn_complete", turnId: "rendered-old" },
+        prompt("prompt-new", "2026-08-28T15:43:40.000Z", { turnId: "rendered-new", text: "第二轮" }),
+        { eventId: "done-new", at: "2026-08-28T15:43:41.000Z", kind: "turn_complete", turnId: "rendered-new" },
+      ]);
+      const byTurn = mapResultsToTurns(turns, [
+        { turnId: "server-old", completionEventId: "done-old", completedAt: "2026-08-28T15:42:41.000Z", hasContent: true },
+        { turnId: "server-new", completionEventId: "done-new", completedAt: "2026-08-28T15:43:41.000Z", hasContent: true },
+      ]);
+      assert.equal(byTurn.get("rendered-old").turnId, "server-old");
+      assert.equal(byTurn.get("rendered-new").turnId, "server-new");
     },
   },
 ];

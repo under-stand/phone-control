@@ -4,6 +4,7 @@ const COMMAND_TOOLS = /(?:exec|shell|bash|terminal|command|powershell|cmd)/i;
 const FILE_TOOLS = /(?:apply_patch|write_file|edit_file|create_file|delete_file|move_file)/i;
 const TEST_SIGNAL = /(?:^|[\s/:_-])(?:test|tests|pytest|vitest|jest|playwright|verify|check|lint|cargo test|go test)(?:$|[\s/:_-])/i;
 const TERMINAL_KINDS = new Set(["turn_complete", "session_end", "error", "aborted"]);
+const MAX_TASK_RESULTS = 256;
 
 function unique(values, limit) {
   return [...new Set(values.filter(Boolean))].slice(0, limit);
@@ -34,6 +35,65 @@ function completionIndexes(events) {
     latestByTurn.set(key, index);
   });
   return [...latestByTurn.values()].sort((left, right) => left - right);
+}
+
+function resultIdentity(result) {
+  if (result?.turnId) return `turn:${result.turnId}`;
+  if (result?.completionEventId) return `event:${result.completionEventId}`;
+  if (result?.completedAt) return `at:${result.completedAt}`;
+  return null;
+}
+
+function resultTime(result) {
+  const value = Date.parse(result?.completedAt);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function mergeResult(previous, current) {
+  if (!previous) return current;
+  if (!current) return previous;
+  const files = unique([...(previous.files || []), ...(current.files || [])], 8);
+  const commands = [];
+  for (const command of [...(previous.commands || []), ...(current.commands || [])]) {
+    if (!command || commands.some((item) => item.tool === command.tool && item.summary === command.summary)) continue;
+    commands.push(command);
+  }
+  const previousTests = previous.tests || { status: "not_observed", items: [] };
+  const currentTests = current.tests || { status: "not_observed", items: [] };
+  const tests = unique([...(previousTests.items || []), ...(currentTests.items || [])], 5);
+  const warnings = unique([...(previous.warnings || []), ...(current.warnings || [])], 4);
+  return {
+    ...previous,
+    ...current,
+    completionEventId: current.completionEventId || previous.completionEventId || null,
+    conclusion: current.conclusion || previous.conclusion || null,
+    files,
+    commands: commands.slice(-6),
+    tests: {
+      status: currentTests.status !== "not_observed" ? currentTests.status : previousTests.status,
+      items: tests,
+    },
+    warnings,
+    hasContent: Boolean(current.hasContent || previous.hasContent || files.length || commands.length || tests.length || warnings.length),
+  };
+}
+
+// Keep completed-turn snapshots separate from the rolling event window. A
+// busy session can evict its older timeline events while its result cards
+// should remain available in the detail view. The snapshots are rebuilt from
+// the append-only event log during restore, so they do not need a second
+// persistence format.
+export function mergeTaskResults(previous = [], current = []) {
+  const merged = new Map();
+  for (const result of [...(Array.isArray(previous) ? previous : []), ...(Array.isArray(current) ? current : [])]) {
+    if (!result || typeof result !== "object") continue;
+    const key = resultIdentity(result);
+    if (!key) continue;
+    merged.set(key, mergeResult(merged.get(key), result));
+  }
+  return [...merged.values()]
+    .sort((left, right) => resultTime(left) - resultTime(right))
+    .slice(-MAX_TASK_RESULTS);
 }
 
 function fileCandidates(summary) {
@@ -86,6 +146,7 @@ function deriveTaskResultAt(session, events, completionIndex, { fallbackTurnId =
   return {
     status,
     turnId: completion.turnId || fallbackTurnId || null,
+    completionEventId: completion.eventId || null,
     completedAt: completion.at || session.lastCompletionAt || session.completedAt || null,
     conclusion,
     files,
@@ -101,9 +162,10 @@ function deriveTaskResultAt(session, events, completionIndex, { fallbackTurnId =
 
 export function deriveTaskResults(session) {
   const events = Array.isArray(session?.events) ? session.events : [];
-  return completionIndexes(events)
+  const derived = completionIndexes(events)
     .map((completionIndex) => deriveTaskResultAt(session, events, completionIndex))
     .filter(Boolean);
+  return mergeTaskResults(session?.taskResults, derived);
 }
 
 export function deriveTaskResult(session) {
@@ -137,6 +199,7 @@ export function detailTaskResult(result) {
   return {
     status: result.status,
     turnId: result.turnId,
+    completionEventId: result.completionEventId,
     completedAt: result.completedAt,
     files: result.files.slice(0, 8),
     commands: result.commands.slice(0, 6),

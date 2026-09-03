@@ -3,9 +3,10 @@ import { appendFile, chmod, mkdir, open, readFile, rename, stat, writeFile } fro
 import { dirname } from "node:path";
 import { clampText, inferSurface, isCodexInjectedUserMessage, isoTime } from "./utils.mjs";
 import { buildTaskSearchDocument, buildTaskTitleContext, isMeaningfulTaskPrompt, searchTaskDocuments } from "./task-semantics.mjs";
-import { deriveTaskResult, deriveTaskResults, detailTaskResult, summarizeTaskResult } from "./task-result.mjs";
+import { deriveTaskResult, deriveTaskResults, detailTaskResult, mergeTaskResults, summarizeTaskResult } from "./task-result.mjs";
 
 const MAX_SESSION_EVENTS = 240;
+const TERMINAL_TASK_EVENT_KINDS = new Set(["turn_complete", "session_end", "error", "aborted"]);
 const MAX_SEEN_EVENTS = 8_000;
 const DEFAULT_STALE_AFTER_MS = 10 * 60_000;
 const MESSAGE_DUPLICATE_WINDOW_MS = 1_500;
@@ -187,6 +188,10 @@ function newSession(event) {
     lastCompletedTurnId: null,
     lastCompletionEventId: null,
     lastCompletionAt: null,
+    // Result cards outlive the rolling event window. They are reconstructed
+    // from the append-only event log during restore and never exposed as an
+    // internal field in the public session payload.
+    taskResults: [],
     testEvidence: String(event.source || "").startsWith("phone-control-smoke"),
     control: {
       mode: "observe",
@@ -210,8 +215,16 @@ function newSession(event) {
 
 function trimSessionEvents(session) {
   while (session.events.length > MAX_SESSION_EVENTS) {
+    // Prefer dropping low-value activity rows. Keep tool_start rows from the
+    // active turn until its terminal snapshot is captured; if that turn itself
+    // exceeds the cap, evict its oldest tool rows before any user/assistant
+    // message so the conversation skeleton remains renderable.
+    const activeTurnId = session.turnId || null;
     let index = session.events.findIndex((event) => LOW_VALUE_EVENT_KINDS.has(event.kind));
+    if (index < 0) index = session.events.findIndex((event) => event.kind === "tool_start" && (!activeTurnId || event.turnId !== activeTurnId));
+    if (index < 0) index = session.events.findIndex((event) => ["turn_complete", "session_end", "error", "aborted"].includes(event.kind) && (!activeTurnId || event.turnId !== activeTurnId));
     if (index < 0) index = session.events.findIndex((event) => event.kind === "tool_start");
+    if (index < 0) index = session.events.findIndex((event) => !["user_prompt", "assistant_message", "turn_complete", "session_end", "error", "aborted"].includes(event.kind));
     if (index < 0) index = 0;
     session.events.splice(index, 1);
     session.eventsDiscarded = (session.eventsDiscarded || 0) + 1;
@@ -659,6 +672,9 @@ export class SessionStore extends EventEmitter {
       const enrichedMessage = enrichDuplicateMessage(session, normalized);
       const enrichedProvenance = enrichDuplicateProvenance(session, normalized);
       if (enrichedMessage || enrichedProvenance) {
+        if (TERMINAL_TASK_EVENT_KINDS.has(normalized.kind)) {
+          session.taskResults = mergeTaskResults(session.taskResults, deriveTaskResults(session));
+        }
         this.taskDocuments.delete(session.id);
         if (persist && this.eventLogPath) this.queuePersist(normalized);
         if (announce) this.emit("session", this.publicSummary(session));
@@ -694,6 +710,9 @@ export class SessionStore extends EventEmitter {
         tool: normalized.tool || null,
         message: normalized.message || null,
       });
+      if (TERMINAL_TASK_EVENT_KINDS.has(normalized.kind)) {
+        session.taskResults = mergeTaskResults(session.taskResults, deriveTaskResults(session));
+      }
       trimSessionEvents(session);
     }
     this.sessions.set(session.id, session);
@@ -844,8 +863,8 @@ export class SessionStore extends EventEmitter {
       ? (boundedEventLimit == null ? session.events : session.events.slice(-boundedEventLimit)).map(publicEvent)
       : [];
     const source = includeEvents
-      ? { ...session, events: selectedEvents }
-      : Object.fromEntries(Object.entries(session).filter(([key]) => key !== "events"));
+      ? Object.fromEntries(Object.entries({ ...session, events: selectedEvents }).filter(([key]) => key !== "taskResults"))
+      : Object.fromEntries(Object.entries(session).filter(([key]) => key !== "events" && key !== "taskResults"));
     const copy = JSON.parse(JSON.stringify(source));
     const updatedAtMs = Date.parse(copy.updatedAt);
     const ageMs = Math.max(0, Date.now() - updatedAtMs);
@@ -872,6 +891,7 @@ export class SessionStore extends EventEmitter {
       copy.eventsPartial = selectedEvents.length < session.events.length;
     }
     delete copy.testEvidence;
+    delete copy.taskResults;
     delete copy.transcriptPath;
     delete copy.firstUserMessage;
     delete copy.taskGoalMessage;
