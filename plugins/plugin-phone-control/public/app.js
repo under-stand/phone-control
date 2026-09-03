@@ -9,9 +9,9 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=80";
-import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=80";
-import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=80";
+} from "./lib/format.js?v=81";
+import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=81";
+import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=81";
 
 function storedCompletionKeys() {
   try {
@@ -80,6 +80,7 @@ const state = {
   expandedMessages: new Set(),
   expandedTurnProcesses: new Set(),
   expandedTurnUpdates: new Set(),
+  collapsedResults: new Set(),
   richTextCache: new Map(),
   historyVisibleTurns: new Map(),
   detailSessions: new Map(),
@@ -2226,14 +2227,21 @@ function taskResultMarkup(session) {
   const commands = Array.isArray(result.commands) ? result.commands : [];
   const testItems = Array.isArray(result.tests?.items) ? result.tests.items : [];
   const warnings = Array.isArray(result.warnings) ? result.warnings : [];
-  return `<section class="task-result" data-tone="${escapeHtml(result.tone)}" aria-label="${escapeHtml(result.title)}">
-    <header><span class="task-result-mark" aria-hidden="true">${result.status === "completed" ? "✓" : result.status === "failed" ? "!" : "■"}</span><div><small>RESULT</small><h3>${escapeHtml(result.title)}</h3></div>${result.completedAt ? `<time>${relativeTime(result.completedAt)}</time>` : ""}</header>
-    ${result.conclusion ? `<div class="task-result-conclusion timeline-rich">${renderMarkdownBlocks(result.conclusion)}</div>` : ""}
-    ${files.length ? `<div class="task-result-section"><b>涉及文件</b><ul class="task-result-files">${files.map((file) => `<li><code>${escapeHtml(file)}</code></li>`).join("")}</ul></div>` : ""}
-    ${testItems.length ? `<div class="task-result-section"><b>${escapeHtml(result.testStatus)}</b><ul>${testItems.map((test) => `<li>${escapeHtml(test)}</li>`).join("")}</ul><small>这里只表示捕获到验证命令；是否通过以 Codex 最终回复和完整输出为准。</small></div>` : ""}
-    ${commands.length ? `<details class="task-result-commands"><summary>运行记录 · ${commands.length}</summary><ul>${commands.map((command) => `<li><span>${escapeHtml(command.tool)}</span><code>${escapeHtml(command.summary)}</code></li>`).join("")}</ul></details>` : ""}
-    ${warnings.length ? `<div class="task-result-warnings"><b>注意</b>${warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
-  </section>`;
+  const collapsed = state.collapsedResults.has(session.id);
+  return `<details class="task-result" data-task-result="${escapeHtml(session.id)}" data-tone="${escapeHtml(result.tone)}"${collapsed ? "" : " open"}>
+    <summary class="task-result-summary">
+      <span class="task-result-mark" aria-hidden="true">${result.status === "completed" ? "✓" : result.status === "failed" ? "!" : "■"}</span>
+      <span class="task-result-heading"><small>RESULT</small><b>${escapeHtml(result.title)}</b></span>
+      <span class="task-result-summary-meta">${result.completedAt ? `<time>${relativeTime(result.completedAt)}</time>` : ""}<i class="task-result-chevron" aria-hidden="true"></i></span>
+    </summary>
+    <div class="task-result-body">
+      ${result.conclusion ? `<section class="task-result-message turn-message turn-assistant"><header><b>Codex</b><span class="turn-message-meta"><button class="message-copy" type="button" data-copy-result="${escapeHtml(session.id)}" aria-label="复制本轮结果">复制</button></span></header><div class="timeline-message"><div class="timeline-rich" data-timeline-text>${renderMarkdownBlocks(result.conclusion)}</div></div></section>` : ""}
+      ${files.length ? `<div class="task-result-section"><b>涉及文件</b><ul class="task-result-files">${files.map((file) => `<li><code>${escapeHtml(file)}</code></li>`).join("")}</ul></div>` : ""}
+      ${testItems.length ? `<div class="task-result-section"><b>${escapeHtml(result.testStatus)}</b><ul>${testItems.map((test) => `<li>${escapeHtml(test)}</li>`).join("")}</ul><small>这里只表示捕获到验证命令；是否通过以 Codex 最终回复和完整输出为准。</small></div>` : ""}
+      ${commands.length ? `<details class="task-result-commands"><summary>运行记录 · ${commands.length}</summary><ul>${commands.map((command) => `<li><span>${escapeHtml(command.tool)}</span><code>${escapeHtml(command.summary)}</code></li>`).join("")}</ul></details>` : ""}
+      ${warnings.length ? `<div class="task-result-warnings"><b>注意</b>${warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
+    </div>
+  </details>`;
 }
 
 function controlChannelLabel(session) {
@@ -3686,6 +3694,33 @@ elements.detail.addEventListener("click", (event) => {
       });
     return;
   }
+  const resultCopyButton = event.target.closest("[data-copy-result]");
+  if (resultCopyButton) {
+    const session = state.detailSessions.get(resultCopyButton.dataset.copyResult);
+    const message = session?.result?.conclusion || "";
+    resultCopyButton.disabled = true;
+    void writeClipboardText(message)
+      .then(() => {
+        resultCopyButton.dataset.copyState = "copied";
+        resultCopyButton.classList.add("is-copied");
+        resultCopyButton.textContent = "已复制";
+        resultCopyButton.setAttribute("aria-label", "本轮结果已复制");
+        toast("本轮结果已复制");
+        setTimeout(() => {
+          if (!resultCopyButton.isConnected || resultCopyButton.dataset.copyState !== "copied") return;
+          delete resultCopyButton.dataset.copyState;
+          resultCopyButton.classList.remove("is-copied");
+          resultCopyButton.textContent = "复制";
+          resultCopyButton.setAttribute("aria-label", "复制本轮结果");
+          resultCopyButton.disabled = false;
+        }, 1_600);
+      })
+      .catch((error) => {
+        resultCopyButton.disabled = false;
+        toast(error?.message || "复制失败，请长按结果文本复制");
+      });
+    return;
+  }
   const messageButton = event.target.closest("[data-expand-message]");
   if (messageButton) {
     const row = messageButton.closest(".timeline-message");
@@ -3742,6 +3777,10 @@ elements.detail.addEventListener("click", (event) => {
 });
 elements.detail.addEventListener("toggle", (event) => {
   const details = event.target;
+  if (details.matches?.("[data-task-result]")) {
+    if (details.open) state.collapsedResults.delete(details.dataset.taskResult);
+    else state.collapsedResults.add(details.dataset.taskResult);
+  }
   if (details.matches?.("[data-turn-process]")) {
     if (details.open) state.expandedTurnProcesses.add(details.dataset.turnProcess);
     else state.expandedTurnProcesses.delete(details.dataset.turnProcess);

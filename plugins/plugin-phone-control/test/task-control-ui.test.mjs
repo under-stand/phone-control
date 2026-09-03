@@ -17,10 +17,12 @@ export const tests = [
       ]);
       assert.match(html, /id="action-inbox"/);
       assert.match(app, /function taskResultMarkup/);
+      assert.match(app, /data-task-result/);
+      assert.match(app, /collapsedResults/);
       assert.match(app, /function commandStateMarkup/);
       assert.match(styles, /\.task-result \{/);
       assert.match(styles, /\.command-lifecycle \{/);
-      assert.match(worker, /task-view\.js\?v=80/);
+      assert.match(worker, /task-view\.js\?v=81/);
     },
   },
 ];

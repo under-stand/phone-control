@@ -1,4 +1,4 @@
-import { clampText } from "./utils.mjs";
+import { clampMessageText, clampText } from "./utils.mjs";
 
 const COMMAND_TOOLS = /(?:exec|shell|bash|terminal|command|powershell|cmd)/i;
 const FILE_TOOLS = /(?:apply_patch|write_file|edit_file|create_file|delete_file|move_file)/i;
@@ -43,7 +43,7 @@ function conclusionFrom(events, fallback, completion) {
     && (!completion?.turnId || fallback.turnId === completion.turnId)
     && (!Number.isFinite(windowStart) || !Number.isFinite(fallbackAt) || fallbackAt >= windowStart)
     && (!Number.isFinite(completionAt) || !Number.isFinite(fallbackAt) || fallbackAt <= completionAt);
-  return clampText(final?.message?.text || (fallbackMatches ? fallback.text : null), 1_600) || null;
+  return clampMessageText(final?.message?.text || (fallbackMatches ? fallback.text : null), 1_600) || null;
 }
 
 export function deriveTaskResult(session) {

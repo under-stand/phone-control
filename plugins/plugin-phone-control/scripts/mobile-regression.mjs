@@ -328,7 +328,9 @@ https://inside-fence.example
     const turnId = `turn-thread-history-${turn}`;
     runtime.store.ingest(event("thread-history", historyIndex++, "user_prompt", { turnId, message: { role: "user", text: `历史任务 ${turn}：检查这一轮的实现和结果。` } }));
     runtime.store.ingest(event("thread-history", historyIndex++, "tool_start", { turnId, tool: { name: turn === 34 ? "exec_command" : turn % 2 ? "exec" : "apply_patch", summary: turn === 34 ? "npm run verify:release" : "处理历史任务" } }));
-    runtime.store.ingest(event("thread-history", historyIndex++, "assistant_message", { turnId, message: { role: "assistant", text: `历史回复 ${turn}：这里是一段足够长的文字，用于确认手机上按轮次浏览消息，不会被工具活动淹没。`.repeat(3) } }));
+    runtime.store.ingest(event("thread-history", historyIndex++, "assistant_message", { turnId, message: { role: "assistant", text: turn === 34
+      ? "历史回复 34：结果卡应保持和会话轮次一致的 Markdown 排版。\n\n### 验证结果\n\n- 结构清晰\n- 手机上可折叠"
+      : `历史回复 ${turn}：这里是一段足够长的文字，用于确认手机上按轮次浏览消息，不会被工具活动淹没。`.repeat(3) } }));
     runtime.store.ingest(event("thread-history", historyIndex++, "turn_complete", { turnId }));
   }
   bridge.set("thread-history", { status: "idle", activeFlags: [], activeTurnId: null });
@@ -480,6 +482,13 @@ https://inside-fence.example
   assert.equal(await highlightedHistoricalReply.count(), 1, "opening a search result must reveal and highlight the exact matching historical reply");
   assert.equal(await page.locator("#detail[open] .task-result").count(), 1, "a completed task must expose one structured result card");
   assert.match(await page.locator("#detail[open] .task-result").innerText(), /本轮结果[\s\S]*历史回复 34[\s\S]*已运行验证[\s\S]*npm run verify:release/);
+  const resultCard = page.locator("#detail[open] .task-result");
+  assert.equal(await resultCard.locator(".task-result-message h4").count(), 1, "the result conclusion must use the same Markdown heading renderer as conversation turns");
+  assert.equal(await resultCard.getAttribute("open"), "", "result cards should open initially for a fresh detail view");
+  await resultCard.locator(":scope > summary").click();
+  assert.equal(await resultCard.getAttribute("open"), null, "result cards should collapse from their summary");
+  await resultCard.locator(":scope > summary").click();
+  assert.equal(await resultCard.getAttribute("open"), "", "result cards should reopen without losing their content");
   await page.locator("#detail-close").click();
   await page.locator("#task-search-clear").click();
   assert.match(await page.locator('[data-filter="recent"]').getAttribute("class"), /active/, "clearing search must restore the previous task scope");

@@ -11,13 +11,13 @@ export const tests = [
           { kind: "user_prompt", turnId: "turn-1", at: "2026-09-04T00:00:00Z", message: { role: "user", text: "Implement it" } },
           { kind: "tool_start", turnId: "turn-1", at: "2026-09-04T00:00:01Z", tool: { name: "apply_patch", summary: "./src/task-result.mjs" } },
           { kind: "tool_start", turnId: "turn-1", at: "2026-09-04T00:00:02Z", tool: { name: "exec_command", summary: "npm test" } },
-          { kind: "assistant_message", turnId: "turn-1", phase: "final_answer", at: "2026-09-04T00:00:03Z", message: { role: "assistant", text: "Implemented the result card and verified it." } },
+          { kind: "assistant_message", turnId: "turn-1", phase: "final_answer", at: "2026-09-04T00:00:03Z", message: { role: "assistant", text: "Implemented the result card.\n\n### Verification\n\n- Mobile layout\n- Result formatting" } },
           { kind: "turn_complete", turnId: "turn-1", at: "2026-09-04T00:00:04Z" },
         ],
       });
       assert.equal(result.status, "completed");
       assert.equal(result.turnId, "turn-1");
-      assert.equal(result.conclusion, "Implemented the result card and verified it.");
+      assert.equal(result.conclusion, "Implemented the result card.\n\n### Verification\n\n- Mobile layout\n- Result formatting");
       assert.deepEqual(result.files, ["./src/task-result.mjs"]);
       assert.deepEqual(result.tests.items, ["npm test"]);
       assert.equal(result.tests.status, "observed");

@@ -2,7 +2,7 @@ name: Verify
 
 on:
   push:
-    branches: [main, "feat/**", "release/**"]
+    branches: [main, "feat/**", "fix/**", "release/**"]
   pull_request:
 
 permissions:
