@@ -81,6 +81,9 @@ const state = {
   expandedTurnProcesses: new Set(),
   expandedTurnUpdates: new Set(),
   expandedResults: new Set(),
+  automaticTitleRequested: new Set(),
+  automaticTitleQueue: [],
+  automaticTitleActive: false,
   richTextCache: new Map(),
   historyVisibleTurns: new Map(),
   detailSessions: new Map(),
@@ -475,6 +478,46 @@ function taskCard(session) {
     </article>`;
 }
 
+function queueAutomaticTaskTitles(sessions) {
+  for (const session of sessions.slice(0, 12)) {
+    if (!isUserTask(session) || session.task?.customTitle || session.task?.smartTitle) continue;
+    if (state.automaticTitleRequested.has(session.id) || state.automaticTitleQueue.includes(session.id)) continue;
+    state.automaticTitleRequested.add(session.id);
+    state.automaticTitleQueue.push(session.id);
+  }
+  void processAutomaticTaskTitles();
+}
+
+async function processAutomaticTaskTitles() {
+  if (state.automaticTitleActive) return;
+  state.automaticTitleActive = true;
+  try {
+    while (state.automaticTitleQueue.length) {
+      const sessionId = state.automaticTitleQueue.shift();
+      try {
+        const payload = await request(`/api/sessions/${encodeURIComponent(sessionId)}/task-title/auto`, {
+          method: "POST",
+          timeoutMs: 55_000,
+        });
+        const summary = payload.session;
+        if (!summary) continue;
+        state.sessions.set(sessionId, summary);
+        state.sessionsMutationRevision += 1;
+        const detail = state.detailSessions.get(sessionId);
+        if (detail) state.detailSessions.set(sessionId, { ...detail, ...summary, events: detail.events });
+        if (state.searchQuery) queueTaskSearch(0);
+        scheduleRender({ force: true });
+        if (elements.detail.open && elements.detail.dataset.sessionId === sessionId) rerenderCachedDetail(sessionId);
+      } catch {
+        // Naming is progressive enhancement. Keep the deterministic title when
+        // Codex is busy, offline, or has no usable task prompt.
+      }
+    }
+  } finally {
+    state.automaticTitleActive = false;
+  }
+}
+
 function taskGroup(name, sessions, collapsed = false) {
   const cards = `<div class="project-task-list">${sessions.map(taskCard).join("")}</div>`;
   if (!collapsed || sessions.length === 1) return `<section class="project-group"><header class="project-group-header"><h3>${escapeHtml(name)}</h3><span>${sessions.length} 个任务</span></header>${cards}</section>`;
@@ -537,6 +580,7 @@ function render() {
       : "正在检索本机已保留历史；当前先显示卡片匹配结果";
   }
   renderTargetTracker();
+  queueAutomaticTaskTitles(visible);
   state.listDirty = false;
 }
 
@@ -2356,6 +2400,7 @@ function renderDetails(session, { loading = false } = {}) {
   );
   const showControlNotice = controlIsImportant || (!question && !approval && !composer);
   const deletionBlocked = ["working", "waiting"].includes(session.status);
+  const automaticTitle = session.task?.smartTitle || session.task?.autoTitle || projectName(session);
   const technicalOpen = Boolean(elements.detailContent.querySelector(".technical-details[open]"));
   const detailActionCount = 2 + Number(session.taskKind === "user") + Number(Boolean(session.control?.canHandoff)) + Number(Boolean(session.control?.canReclaim));
   syncMarkup(elements.detailHeader, `
@@ -2383,10 +2428,10 @@ function renderDetails(session, { loading = false } = {}) {
     technical: `<details class="technical-details"${technicalOpen ? " open" : ""}>
       <summary>会话设置与信息</summary>
       <form class="task-title-management" data-task-title-form="${escapeHtml(session.id)}">
-        <div><b>卡片名称</b><small>${session.task?.customTitle ? `已手动命名 · 自动名称：${escapeHtml(session.task.autoTitle || projectName(session))}` : `自动跟随当前任务 · ${escapeHtml(session.task?.autoTitle || projectName(session))}`}</small></div>
-        <label><span class="sr-only">自定义卡片名称</span><input data-task-title-input maxlength="80" value="${escapeHtml(session.task?.customTitle || "")}" placeholder="${escapeHtml(session.task?.autoTitle || "使用自动名称")}" autocomplete="off"></label>
+        <div><b>卡片名称</b><small>${session.task?.customTitle ? `已手动命名 · 自动名称：${escapeHtml(automaticTitle)}` : `自动跟随任务 · ${escapeHtml(automaticTitle)}`}</small></div>
+        <label><span class="sr-only">自定义卡片名称</span><input data-task-title-input maxlength="80" value="${escapeHtml(session.task?.customTitle || "")}" placeholder="${escapeHtml(automaticTitle || "使用自动名称")}" autocomplete="off"></label>
         <div class="task-title-actions"><button class="task-title-suggest" type="button" data-suggest-task-title="${escapeHtml(session.id)}">智能生成</button>${session.task?.customTitle ? `<button class="task-title-reset" type="button" data-reset-task-title="${escapeHtml(session.id)}">恢复自动</button>` : ""}<button class="task-title-save" type="submit">保存</button></div>
-        <p role="status" data-task-title-status>智能生成仅在点按时把最近几轮交给 Codex 概括，不写入会话历史。</p>
+        <p role="status" data-task-title-status>自动名称由 Codex 概括任务生成；点按“智能生成”可重新生成候选，保存后才会改名。</p>
       </form>
       <dl class="detail-grid">
         <div><dt>模型</dt><dd>${escapeHtml(session.model || "Unknown")}${session.reasoningEffort || isFastServiceTier(session.serviceTier) ? `<small>${[session.reasoningEffort ? `推理 ${modelEffortLabel(session.reasoningEffort)}` : null, isFastServiceTier(session.serviceTier) ? "Fast" : null].filter(Boolean).map(escapeHtml).join(" · ")}</small>` : ""}</dd></div>

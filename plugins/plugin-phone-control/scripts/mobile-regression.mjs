@@ -273,7 +273,7 @@ const runtime = await createPhoneControlServer({
   config: { host: "127.0.0.1", port: 0, token: "mobile-audit-token", dataDir, machineName: "Audit Mac", interactions: { enabled: true }, approvals: { enabled: false } },
   scanRollouts: false,
   appServerBridge: bridge,
-  taskTitleGenerator: { suggest: async () => ({ title: "验证手机新建会话", cached: false }) },
+  taskTitleGenerator: { suggest: async (context) => ({ title: context.automaticTitle || "验证手机新建会话", cached: false }) },
 });
 let browser;
 try {

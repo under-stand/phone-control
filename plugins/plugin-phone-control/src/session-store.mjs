@@ -502,6 +502,7 @@ export class SessionStore extends EventEmitter {
     this.deletedSessions = new Set();
     this.taskDocuments = new Map();
     this.taskTitles = new Map();
+    this.smartTaskTitles = new Map();
     this.taskTitlePersistQueue = Promise.resolve();
     this.retentionDays = retentionDays;
     this.maxEventLogBytes = maxEventLogBytes;
@@ -542,6 +543,11 @@ export class SessionStore extends EventEmitter {
         const cleaned = title.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
         if (cleaned && cleaned.length <= 80) this.taskTitles.set(sessionId, cleaned);
       }
+      for (const [sessionId, title] of Object.entries(parsed.automaticTitles || {})) {
+        if (typeof sessionId !== "string" || typeof title !== "string") continue;
+        const cleaned = title.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+        if (cleaned && cleaned.length <= 80) this.smartTaskTitles.set(sessionId, cleaned);
+      }
     } catch (error) {
       if (error.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
     }
@@ -552,7 +558,11 @@ export class SessionStore extends EventEmitter {
     this.taskTitlePersistQueue = this.taskTitlePersistQueue.then(async () => {
       await mkdir(dirname(this.taskTitlesPath), { recursive: true, mode: 0o700 });
       const temporary = `${this.taskTitlesPath}.tmp-${process.pid}-${Date.now()}`;
-      const body = { version: 1, titles: Object.fromEntries(this.taskTitles) };
+      const body = {
+        version: 1,
+        titles: Object.fromEntries(this.taskTitles),
+        automaticTitles: Object.fromEntries(this.smartTaskTitles),
+      };
       await writeFile(temporary, `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 });
       await rename(temporary, this.taskTitlesPath);
       await chmod(this.taskTitlesPath, 0o600);
@@ -569,6 +579,26 @@ export class SessionStore extends EventEmitter {
     if (title.length > 80) throw Object.assign(new Error("Task title must be 80 characters or fewer"), { statusCode: 400 });
     if (title) this.taskTitles.set(id, title);
     else this.taskTitles.delete(id);
+    this.taskDocuments.delete(id);
+    await this.queueTaskTitlesPersist();
+    const summary = this.publicSummary(session);
+    this.emit("session", summary);
+    return summary;
+  }
+
+  hasAutomaticTaskTitle(id) {
+    return Boolean(this.smartTaskTitles.get(id));
+  }
+
+  async setAutomaticTaskTitle(id, value) {
+    const session = this.sessions.get(id);
+    if (!session) throw Object.assign(new Error("Session not found"), { statusCode: 404 });
+    if (sessionTaskKind(session) !== "user") throw Object.assign(new Error("Only user sessions can be named"), { statusCode: 409 });
+    if (value != null && typeof value !== "string") throw Object.assign(new Error("Task title must be text or null"), { statusCode: 400 });
+    const title = value == null ? "" : value.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+    if (title.length > 80) throw Object.assign(new Error("Task title must be 80 characters or fewer"), { statusCode: 400 });
+    if (title) this.smartTaskTitles.set(id, title);
+    else this.smartTaskTitles.delete(id);
     this.taskDocuments.delete(id);
     await this.queueTaskTitlesPersist();
     const summary = this.publicSummary(session);
@@ -694,6 +724,7 @@ export class SessionStore extends EventEmitter {
     this.sessions.delete(id);
     this.taskDocuments.delete(id);
     if (this.taskTitles.delete(id)) this.queueTaskTitlesPersist();
+    if (this.smartTaskTitles.delete(id)) this.queueTaskTitlesPersist();
     for (const event of session?.events || []) {
       if (event.eventId) this.seen.delete(event.eventId);
     }
@@ -878,7 +909,11 @@ export class SessionStore extends EventEmitter {
   taskDocument(session) {
     let document = this.taskDocuments.get(session.id);
     if (!document) {
-      document = buildTaskSearchDocument({ ...session, customTaskTitle: this.taskTitles.get(session.id) || null });
+      document = buildTaskSearchDocument({
+        ...session,
+        customTaskTitle: this.taskTitles.get(session.id) || null,
+        smartTaskTitle: this.smartTaskTitles.get(session.id) || null,
+      });
       this.taskDocuments.set(session.id, document);
     }
     return document;

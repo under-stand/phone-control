@@ -122,6 +122,42 @@ export const tests = [
     },
   },
   {
+    name: "persists generated smart task titles without treating them as manual names",
+    async run() {
+      const dataDir = await mkdtemp(path.join(os.tmpdir(), "phone-control-smart-title-"));
+      const taskTitlesPath = path.join(dataDir, "task-titles.json");
+      try {
+        const first = new SessionStore({ taskTitlesPath });
+        await first.restore();
+        first.ingest({
+          eventId: "smart-title-prompt",
+          sessionId: "smart-title-session",
+          kind: "user_prompt",
+          at: "2026-08-28T01:00:00.000Z",
+          message: { role: "user", text: "会话标题生成得不准确，需要优化" },
+        });
+        const generated = await first.setAutomaticTaskTitle("smart-title-session", "统一移动端任务命名");
+        assert.equal(generated.task.title, "统一移动端任务命名");
+        assert.equal(generated.task.smartTitle, "统一移动端任务命名");
+        assert.equal(generated.task.customTitle, null);
+
+        const restored = new SessionStore({ taskTitlesPath });
+        await restored.restore();
+        restored.ingest({
+          eventId: "smart-title-prompt-restored",
+          sessionId: "smart-title-session",
+          kind: "user_prompt",
+          at: "2026-08-28T01:00:00.000Z",
+          message: { role: "user", text: "会话标题生成得不准确，需要优化" },
+        });
+        assert.equal(restored.list()[0].task.title, "统一移动端任务命名");
+        assert.equal(restored.list()[0].task.customTitle, null);
+      } finally {
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
     name: "persists a private target session per paired device",
     async run() {
       const dataDir = await mkdtemp(path.join(os.tmpdir(), "phone-control-device-target-"));

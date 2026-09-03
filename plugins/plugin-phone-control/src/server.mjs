@@ -1588,6 +1588,28 @@ export async function createPhoneControlServer({
         return;
       }
 
+      if (request.method === "POST" && url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/task-title/auto")) {
+        if (!isSameOriginWrite(request)) {
+          json(response, 403, { error: "Automatic task title generation failed origin checks" });
+          return;
+        }
+        if (!titleGenerator?.suggest) {
+          json(response, 503, { error: "Smart task naming is not available" });
+          return;
+        }
+        const id = decodeURIComponent(url.pathname.slice("/api/sessions/".length, -"/task-title/auto".length));
+        if (store.hasAutomaticTaskTitle(id)) {
+          const summary = store.getSummary(id);
+          json(response, 200, { session: summary, suggestion: { title: summary?.task?.smartTitle || summary?.task?.title || "", cached: true } });
+          return;
+        }
+        const context = store.taskTitleContext(id);
+        const suggestion = await titleGenerator.suggest(context);
+        const session = await store.setAutomaticTaskTitle(id, suggestion.title);
+        json(response, 200, { session, suggestion });
+        return;
+      }
+
       if (request.method === "PUT" && url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/task-title")) {
         if (!isSameOriginWrite(request)) {
           json(response, 403, { error: "Task rename failed origin checks" });

@@ -492,6 +492,19 @@ export const tests = [
         assert.equal(sessions.body.sessions[0].events, undefined);
         assert.equal(sessions.body.sessions[0].eventsCount, 1);
 
+        const automatic = await request({
+          port: started.port,
+          pathname: "/api/sessions/session-1/task-title/auto",
+          method: "POST",
+          headers: { cookie, "x-phone-control-client": "1" },
+        });
+        assert.equal(automatic.status, 200);
+        assert.equal(automatic.body.session.task.title, "Execute requested task");
+        assert.equal(automatic.body.session.task.smartTitle, "Execute requested task");
+        assert.equal(automatic.body.session.task.customTitle, null);
+        await runtime.store.setAutomaticTaskTitle("session-1", null);
+        titleContexts.length = 0;
+
         const searched = await request({ port: started.port, pathname: "/api/tasks/search?q=Run%20task", headers: { cookie } });
         assert.equal(searched.status, 200);
         assert.equal(searched.body.total, 1);

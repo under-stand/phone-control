@@ -235,7 +235,8 @@ export function deriveTaskSemantics(session = {}) {
   const topicReliable = !session.eventsDiscarded;
   const topicTitle = topicReliable ? titleFromPrompt(topic?.text, fallback) : fallback;
   const customTitle = cleanTaskText(session.customTaskTitle).slice(0, 80) || null;
-  const title = customTitle || currentTitle;
+  const smartTitle = cleanTaskText(session.smartTaskTitle).slice(0, 80) || null;
+  const title = customTitle || smartTitle || currentTitle;
   const goalPreview = preview(current?.text, 156) || `处理 ${fallback} 中的 Codex 任务`;
   const result = preview(latestAssistant?.text, 180) || null;
   const progress = progressRecord(session, latestAssistant);
@@ -245,7 +246,8 @@ export function deriveTaskSemantics(session = {}) {
     currentTitle,
     topic: topicTitle,
     customTitle,
-    titleSource: customTitle ? "manual" : current?.text ? "current_task" : "workspace",
+    titleSource: customTitle ? "manual" : smartTitle ? "smart" : current?.text ? "current_task" : "workspace",
+    smartTitle,
     goal: goalPreview,
     progress: progress.text,
     progressEventId: progress.source?.eventId || null,

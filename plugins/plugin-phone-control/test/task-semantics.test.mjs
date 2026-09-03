@@ -132,4 +132,17 @@ export const tests = [
       assert.equal(task.currentTitle, "会话标题生成得不准确");
     },
   },
+  {
+    name: "prefers a persisted smart title over the rule-based prompt title",
+    async run() {
+      const task = deriveTaskSemantics(session({
+        smartTaskTitle: "统一移动端任务命名",
+        events: [{ eventId: "prompt", at: "2026-08-28T02:00:00.000Z", message: { role: "user", text: "会话的标题是怎么得到的，感觉不太准啊" } }],
+      }));
+      assert.equal(task.title, "统一移动端任务命名");
+      assert.equal(task.smartTitle, "统一移动端任务命名");
+      assert.equal(task.titleSource, "smart");
+      assert.equal(task.currentTitle, "改进会话标题生成");
+    },
+  },
 ];
