@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { deriveTaskResult, summarizeTaskResult } from "../src/task-result.mjs";
+import { deriveTaskResult, deriveTaskResults, summarizeTaskResult } from "../src/task-result.mjs";
 
 export const tests = [
   {
@@ -25,6 +25,24 @@ export const tests = [
       const summary = summarizeTaskResult(result);
       assert.equal(summary.tests.count, 1);
       assert.equal("commands" in summary, false);
+    },
+  },
+  {
+    name: "builds separate supplemental metadata for every completed turn",
+    run() {
+      const results = deriveTaskResults({ events: [
+        { kind: "user_prompt", turnId: "old", at: "2026-09-03T00:00:00Z", message: { role: "user", text: "Implement the first change" } },
+        { kind: "tool_start", turnId: "old", at: "2026-09-03T00:00:01Z", tool: { name: "apply_patch", summary: "./src/first.mjs" } },
+        { kind: "turn_complete", turnId: "old", at: "2026-09-03T00:00:02Z" },
+        { kind: "user_prompt", turnId: "new", at: "2026-09-04T00:00:00Z", message: { role: "user", text: "Verify the second change" } },
+        { kind: "tool_start", turnId: "new", at: "2026-09-04T00:00:01Z", tool: { name: "exec_command", summary: "npm test" } },
+        { kind: "turn_complete", turnId: "new", at: "2026-09-04T00:00:02Z" },
+      ] });
+      assert.deepEqual(results.map((result) => result.turnId), ["old", "new"]);
+      assert.deepEqual(results[0].files, ["./src/first.mjs"]);
+      assert.deepEqual(results[1].tests.items, ["npm test"]);
+      assert.deepEqual(results[0].commands, []);
+      assert.equal(results[1].commands[0].summary, "npm test");
     },
   },
   {

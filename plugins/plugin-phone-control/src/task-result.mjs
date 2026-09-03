@@ -3,14 +3,14 @@ import { clampMessageText, clampText } from "./utils.mjs";
 const COMMAND_TOOLS = /(?:exec|shell|bash|terminal|command|powershell|cmd)/i;
 const FILE_TOOLS = /(?:apply_patch|write_file|edit_file|create_file|delete_file|move_file)/i;
 const TEST_SIGNAL = /(?:^|[\s/:_-])(?:test|tests|pytest|vitest|jest|playwright|verify|check|lint|cargo test|go test)(?:$|[\s/:_-])/i;
+const TERMINAL_KINDS = new Set(["turn_complete", "session_end", "error", "aborted"]);
 
 function unique(values, limit) {
   return [...new Set(values.filter(Boolean))].slice(0, limit);
 }
 
-function resultWindow(events) {
-  const completionIndex = events.reduce((found, event, index) => ["turn_complete", "session_end", "error", "aborted"].includes(event.kind) ? index : found, -1);
-  if (completionIndex < 0) return [];
+function resultWindow(events, completionIndex = events.length - 1) {
+  if (completionIndex < 0 || !events[completionIndex]) return [];
   const completion = events[completionIndex];
   let start = 0;
   for (let index = completionIndex; index >= 0; index -= 1) {
@@ -22,6 +22,18 @@ function resultWindow(events) {
     }
   }
   return events.slice(start, completionIndex + 1);
+}
+
+function completionIndexes(events) {
+  const latestByTurn = new Map();
+  events.forEach((event, index) => {
+    if (!TERMINAL_KINDS.has(event.kind)) return;
+    // A turn can emit both turn_complete and session_end. Keep the last
+    // terminal event for that turn so the phone shows one metadata card.
+    const key = event.turnId ? `turn:${event.turnId}` : `event:${index}`;
+    latestByTurn.set(key, index);
+  });
+  return [...latestByTurn.values()].sort((left, right) => left - right);
 }
 
 function fileCandidates(summary) {
@@ -46,9 +58,8 @@ function conclusionFrom(events, fallback, completion) {
   return clampMessageText(final?.message?.text || (fallbackMatches ? fallback.text : null), 1_600) || null;
 }
 
-export function deriveTaskResult(session) {
-  const events = Array.isArray(session?.events) ? session.events : [];
-  const window = resultWindow(events);
+function deriveTaskResultAt(session, events, completionIndex, { fallbackTurnId = null } = {}) {
+  const window = resultWindow(events, completionIndex);
   const completion = window.at(-1);
   if (!completion) return null;
   const tools = window.filter((event) => event.kind === "tool_start" && event.tool?.name);
@@ -74,7 +85,7 @@ export function deriveTaskResult(session) {
   const observedTests = unique(testItems, 5);
   return {
     status,
-    turnId: completion.turnId || session.lastCompletedTurnId || null,
+    turnId: completion.turnId || fallbackTurnId || null,
     completedAt: completion.at || session.lastCompletionAt || session.completedAt || null,
     conclusion,
     files,
@@ -88,6 +99,22 @@ export function deriveTaskResult(session) {
   };
 }
 
+export function deriveTaskResults(session) {
+  const events = Array.isArray(session?.events) ? session.events : [];
+  return completionIndexes(events)
+    .map((completionIndex) => deriveTaskResultAt(session, events, completionIndex))
+    .filter(Boolean);
+}
+
+export function deriveTaskResult(session) {
+  const results = deriveTaskResults(session);
+  const result = results.at(-1) || null;
+  if (result && !result.turnId && session?.lastCompletedTurnId) {
+    return { ...result, turnId: session.lastCompletedTurnId };
+  }
+  return result;
+}
+
 export function summarizeTaskResult(result) {
   if (!result) return null;
   return {
@@ -98,6 +125,23 @@ export function summarizeTaskResult(result) {
     files: result.files.slice(0, 3),
     tests: { status: result.tests.status, count: result.tests.items.length },
     warningCount: result.warnings.length,
+    hasContent: result.hasContent,
+  };
+}
+
+// Detail pages need the metadata for each finished turn, but not another copy
+// of the assistant's final answer. Keep this payload bounded and deliberately
+// omit `conclusion`; the conversation timeline owns that text.
+export function detailTaskResult(result) {
+  if (!result) return null;
+  return {
+    status: result.status,
+    turnId: result.turnId,
+    completedAt: result.completedAt,
+    files: result.files.slice(0, 8),
+    commands: result.commands.slice(0, 6),
+    tests: { status: result.tests.status, items: result.tests.items.slice(0, 5) },
+    warnings: result.warnings.slice(0, 4),
     hasContent: result.hasContent,
   };
 }

@@ -3,7 +3,7 @@ import { appendFile, chmod, mkdir, open, readFile, rename, stat, writeFile } fro
 import { dirname } from "node:path";
 import { clampText, inferSurface, isCodexInjectedUserMessage, isoTime } from "./utils.mjs";
 import { buildTaskSearchDocument, buildTaskTitleContext, isMeaningfulTaskPrompt, searchTaskDocuments } from "./task-semantics.mjs";
-import { deriveTaskResult, summarizeTaskResult } from "./task-result.mjs";
+import { deriveTaskResult, deriveTaskResults, detailTaskResult, summarizeTaskResult } from "./task-result.mjs";
 
 const MAX_SESSION_EVENTS = 240;
 const MAX_SEEN_EVENTS = 8_000;
@@ -866,6 +866,7 @@ export class SessionStore extends EventEmitter {
     copy.historyTruncated = Boolean(session.eventsDiscarded);
     copy.hasTranscript = Boolean(session.transcriptPath);
     if (includeEvents) {
+      copy.results = deriveTaskResults(session).map(detailTaskResult);
       copy.eventsTotal = session.events.length;
       copy.eventsStart = Math.max(0, session.events.length - selectedEvents.length);
       copy.eventsPartial = selectedEvents.length < session.events.length;

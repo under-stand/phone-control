@@ -9,9 +9,9 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=83";
-import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=83";
-import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=83";
+} from "./lib/format.js?v=84";
+import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=84";
+import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=84";
 
 function storedCompletionKeys() {
   try {
@@ -1911,7 +1911,7 @@ function turnProcess(turn, sessionId) {
   </details>`;
 }
 
-function conversationTurn(turn, { sessionId, session, result = null, resultTurnId = null, label = "对话轮次", older = false, current = false } = {}) {
+function conversationTurn(turn, { sessionId, session, resultByTurn = null, fallbackResult = null, fallbackResultTurnId = null, label = "对话轮次", older = false, current = false } = {}) {
   const status = conversationTurnStatus(turn);
   const { finalReply, updates } = assistantReplyGroups(turn);
   const model = turn.model || null;
@@ -1920,7 +1920,9 @@ function conversationTurn(turn, { sessionId, session, result = null, resultTurnI
   const showStatus = current || !["idle", "completed"].includes(status);
   const expansionKey = turnExpansionKey(sessionId, turn.id);
   const updatesOpen = state.expandedTurnUpdates.has(expansionKey);
-  const turnResult = resultTurnId && String(resultTurnId) === String(turn.id) && session
+  const result = resultByTurn?.get(String(turn.id))
+    || (fallbackResultTurnId && String(fallbackResultTurnId) === String(turn.id) ? fallbackResult : null);
+  const turnResult = result && session
     ? taskResultMarkup(session, result)
     : "";
   return `<article class="conversation-turn" data-status="${escapeHtml(status)}"${current ? " data-current-turn" : ""}${older ? " data-older-turn" : ""}>
@@ -1936,14 +1938,20 @@ function conversationTurn(turn, { sessionId, session, result = null, resultTurnI
 function conversation(events, session) {
   const sessionId = session.id;
   const turns = conversationTurns(events);
-  const result = session.result || null;
-  const resultTurnId = result?.turnId
+  const latestResult = session.result || null;
+  const results = Array.isArray(session.results) && session.results.length
+    ? session.results
+    : latestResult ? [latestResult] : [];
+  const resultByTurn = new Map(results
+    .filter((result) => result?.turnId)
+    .map((result) => [String(result.turnId), result]));
+  const resultTurnId = latestResult?.turnId
     || turns.find((turn) => ["idle", "completed", "error", "aborted"].includes(conversationTurnStatus(turn)))?.id
     || null;
   const partial = Boolean(state.detailSessions.get(sessionId)?.eventsPartial);
   if (!turns.length && !partial) return `<p class="detail-empty">还没有可显示的对话。</p>`;
   const recentLabels = ["当前轮次", "上一轮", "更早一轮"];
-  const current = turns.slice(0, 3).map((turn, index) => conversationTurn(turn, { sessionId, session, result, resultTurnId, label: recentLabels[index], current: index === 0 })).join("");
+  const current = turns.slice(0, 3).map((turn, index) => conversationTurn(turn, { sessionId, session, resultByTurn, fallbackResult: latestResult, fallbackResultTurnId: resultTurnId, label: recentLabels[index], current: index === 0 })).join("");
   const older = turns.slice(3);
   if (!older.length && !partial) return current;
   const visibleCount = Math.min(older.length, state.historyVisibleTurns.get(sessionId) || 0);
@@ -1962,7 +1970,7 @@ function conversation(events, session) {
       : partial ? "每次加载 8 轮" : `共 ${older.length} 轮较早对话`
     : "从本机读取后续历史";
   return `${current}
-    ${shown.map((turn) => conversationTurn(turn, { sessionId, session, result, resultTurnId, label: "较早轮次", older: true })).join("")}
+    ${shown.map((turn) => conversationTurn(turn, { sessionId, session, resultByTurn, fallbackResult: latestResult, fallbackResultTurnId: resultTurnId, label: "较早轮次", older: true })).join("")}
     <nav class="turn-more${visibleCount ? " has-history" : ""}" aria-label="较早对话轮次">
       ${remaining || needsFullHistory ? `<button class="history-load" type="button" data-expand-history data-needs-full-history="${needsFullHistory}" data-session-id="${escapeHtml(sessionId)}" aria-expanded="${Boolean(visibleCount)}"><b>${loadLabel}</b><small>${loadHint}</small></button>` : `<p class="history-end"><i aria-hidden="true"></i><span>已经到最早一轮</span></p>`}
       ${visibleCount ? `<button class="history-latest" type="button" data-collapse-history data-session-id="${escapeHtml(sessionId)}">回到最新并收起历史 ↑</button>` : ""}
