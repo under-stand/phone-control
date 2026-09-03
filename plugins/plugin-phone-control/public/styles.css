@@ -275,17 +275,18 @@ button { color: inherit; }
 .queued-command.is-delivered { opacity: .72; }
 .queued-command.is-needs_review { border: 1px solid rgba(180,116,24,.3); background: rgba(255,248,232,.9); }
 .queued-command.is-failed { border: 1px solid rgba(178,66,66,.22); background: rgba(255,243,243,.86); }
-.task-result { margin: 10px 0 12px; overflow: hidden; border: 1px solid rgba(35,133,101,.2); border-radius: 16px; background: rgba(255,255,255,.62); }
+.conversation-turn > .task-result { margin-top: 12px; }
+.task-result { overflow: hidden; border: 1px solid rgba(35,133,101,.2); border-radius: 14px; background: rgba(255,255,255,.62); }
 .task-result > summary { list-style: none; cursor: pointer; }
 .task-result > summary::-webkit-details-marker { display: none; }
-.task-result-summary { display: grid; min-height: 52px; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 9px; align-items: center; padding: 8px 11px; background: rgba(35,133,101,.05); }
+.task-result-summary { display: grid; min-height: 46px; grid-template-columns: 27px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 7px 10px; background: rgba(35,133,101,.05); }
 .task-result-summary:focus-visible { outline: 2px solid rgba(104,87,245,.28); outline-offset: -3px; }
 .task-result[open] > .task-result-summary { border-bottom: 1px solid rgba(35,133,101,.12); }
-.task-result-mark { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 10px; background: rgba(35,133,101,.13); color: var(--green); font-weight: 900; }
+.task-result-mark { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 8px; background: rgba(35,133,101,.13); color: var(--green); font-size: 12px; font-weight: 900; }
 .task-result-heading { min-width: 0; }
 .task-result-heading small, .task-result-heading b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-result-heading small { color: var(--green); font-size: 8px; font-weight: 850; letter-spacing: .12em; }
-.task-result-heading b { margin-top: 1px; font-size: 13px; }
+.task-result-heading b { margin-top: 1px; color: #4d4943; font-size: 11px; }
 .task-result-summary-meta { display: flex; align-items: center; gap: 8px; }
 .task-result-summary-meta time { color: var(--muted); font-size: 9px; white-space: nowrap; }
 .task-result-chevron { width: 8px; height: 8px; display: block; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(45deg) translateY(-2px); transition: transform .16s ease; }
@@ -295,11 +296,6 @@ button { color: inherit; }
 .task-result[data-tone="danger"][open] > .task-result-summary { border-bottom-color: rgba(183,66,45,.12); }
 .task-result[data-tone="danger"] .task-result-mark { background: rgba(183,66,45,.12); color: #a43b28; }
 .task-result-body { padding: 0; }
-.task-result-message { margin: 0; padding: 10px 12px 12px; color: #35322e; }
-.task-result-message > header { margin-bottom: 7px; }
-.task-result-message.turn-assistant .timeline-message > [data-timeline-text] { max-height: none; overflow: visible; margin-top: 0; font-size: 13px; line-height: 1.6; }
-.task-result-message .timeline-rich > :first-child { margin-top: 0; }
-.task-result-message .timeline-rich > :last-child { margin-bottom: 0; }
 .task-result-section, .task-result-warnings { padding: 10px 12px; border-top: 1px solid rgba(23,23,22,.07); }
 .task-result-section > b, .task-result-warnings > b { display: block; margin-bottom: 6px; font-size: 10px; }
 .task-result-section ul, .task-result-warnings p { margin: 0; padding: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
@@ -315,8 +311,6 @@ button { color: inherit; }
 .task-result-commands code { overflow-wrap: anywhere; color: #514e48; font-size: 9px; }
 .task-result-warnings { background: rgba(183,66,45,.045); }
 .task-result-warnings p + p { margin-top: 4px; }
-[data-detail-result]:empty { display: none; }
-[data-detail-result] + .conversation { margin-top: 0; }
 .technical-details { overflow: hidden; margin-top: 10px; border: 1px solid var(--line); border-radius: 15px; background: rgba(255,255,255,.38); }
 .technical-details summary { display: flex; min-height: 44px; align-items: center; padding: 0 13px; cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 750; }
 .technical-details[open] { padding: 0 13px 13px; }

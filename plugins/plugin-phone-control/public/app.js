@@ -9,9 +9,9 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=81";
-import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=81";
-import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=81";
+} from "./lib/format.js?v=82";
+import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=82";
+import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=82";
 
 function storedCompletionKeys() {
   try {
@@ -80,7 +80,7 @@ const state = {
   expandedMessages: new Set(),
   expandedTurnProcesses: new Set(),
   expandedTurnUpdates: new Set(),
-  collapsedResults: new Set(),
+  expandedResults: new Set(),
   richTextCache: new Map(),
   historyVisibleTurns: new Map(),
   detailSessions: new Map(),
@@ -1867,7 +1867,7 @@ function turnProcess(turn, sessionId) {
   </details>`;
 }
 
-function conversationTurn(turn, { sessionId, label = "对话轮次", older = false, current = false } = {}) {
+function conversationTurn(turn, { sessionId, session, result = null, resultTurnId = null, label = "对话轮次", older = false, current = false } = {}) {
   const status = conversationTurnStatus(turn);
   const { finalReply, updates } = assistantReplyGroups(turn);
   const model = turn.model || null;
@@ -1876,11 +1876,15 @@ function conversationTurn(turn, { sessionId, label = "对话轮次", older = fal
   const showStatus = current || !["idle", "completed"].includes(status);
   const expansionKey = turnExpansionKey(sessionId, turn.id);
   const updatesOpen = state.expandedTurnUpdates.has(expansionKey);
+  const turnResult = resultTurnId && String(resultTurnId) === String(turn.id) && session
+    ? taskResultMarkup(session, result)
+    : "";
   return `<article class="conversation-turn" data-status="${escapeHtml(status)}"${current ? " data-current-turn" : ""}${older ? " data-older-turn" : ""}>
     <header class="turn-header"><span><b class="turn-position">${escapeHtml(label)}</b><small>${escapeHtml(modelMeta || "模型/推理等级未记录")}</small></span>${showStatus ? `<span class="turn-status">${labels[status] || labels.unknown}</span>` : ""}</header>
     ${turn.userMessages.map((message) => conversationMessage(message, "user")).join("")}
     ${updates.length ? `<details class="turn-updates" data-turn-updates="${escapeHtml(expansionKey)}"${updatesOpen ? " open" : ""}><summary>${updates.length} 条过程回复</summary>${updates.map((message) => conversationMessage(message, "assistant")).join("")}</details>` : ""}
     ${finalReply ? conversationMessage(finalReply, "assistant") : `<p class="turn-pending">Codex 正在处理这一轮，完成后结果会显示在这里。</p>`}
+    ${turnResult}
     ${turnProcess(turn, sessionId)}
   </article>`;
 }
@@ -1888,10 +1892,14 @@ function conversationTurn(turn, { sessionId, label = "对话轮次", older = fal
 function conversation(events, session) {
   const sessionId = session.id;
   const turns = conversationTurns(events);
+  const result = session.result || null;
+  const resultTurnId = result?.turnId
+    || turns.find((turn) => ["idle", "completed", "error", "aborted"].includes(conversationTurnStatus(turn)))?.id
+    || null;
   const partial = Boolean(state.detailSessions.get(sessionId)?.eventsPartial);
   if (!turns.length && !partial) return `<p class="detail-empty">还没有可显示的对话。</p>`;
   const recentLabels = ["当前轮次", "上一轮", "更早一轮"];
-  const current = turns.slice(0, 3).map((turn, index) => conversationTurn(turn, { sessionId, label: recentLabels[index], current: index === 0 })).join("");
+  const current = turns.slice(0, 3).map((turn, index) => conversationTurn(turn, { sessionId, session, result, resultTurnId, label: recentLabels[index], current: index === 0 })).join("");
   const older = turns.slice(3);
   if (!older.length && !partial) return current;
   const visibleCount = Math.min(older.length, state.historyVisibleTurns.get(sessionId) || 0);
@@ -1910,7 +1918,7 @@ function conversation(events, session) {
       : partial ? "每次加载 8 轮" : `共 ${older.length} 轮较早对话`
     : "从本机读取后续历史";
   return `${current}
-    ${shown.map((turn) => conversationTurn(turn, { sessionId, label: "较早轮次", older: true })).join("")}
+    ${shown.map((turn) => conversationTurn(turn, { sessionId, session, result, resultTurnId, label: "较早轮次", older: true })).join("")}
     <nav class="turn-more${visibleCount ? " has-history" : ""}" aria-label="较早对话轮次">
       ${remaining || needsFullHistory ? `<button class="history-load" type="button" data-expand-history data-needs-full-history="${needsFullHistory}" data-session-id="${escapeHtml(sessionId)}" aria-expanded="${Boolean(visibleCount)}"><b>${loadLabel}</b><small>${loadHint}</small></button>` : `<p class="history-end"><i aria-hidden="true"></i><span>已经到最早一轮</span></p>`}
       ${visibleCount ? `<button class="history-latest" type="button" data-collapse-history data-session-id="${escapeHtml(sessionId)}">回到最新并收起历史 ↑</button>` : ""}
@@ -2220,22 +2228,32 @@ function commandStateMarkup(session) {
   </section>`;
 }
 
-function taskResultMarkup(session) {
-  const result = resultView(session.result);
+function taskResultMarkup(session, rawResult = session.result) {
+  const result = resultView(rawResult);
   if (!result?.hasContent) return "";
   const files = Array.isArray(result.files) ? result.files : [];
   const commands = Array.isArray(result.commands) ? result.commands : [];
   const testItems = Array.isArray(result.tests?.items) ? result.tests.items : [];
   const warnings = Array.isArray(result.warnings) ? result.warnings : [];
-  const collapsed = state.collapsedResults.has(session.id);
-  return `<details class="task-result" data-task-result="${escapeHtml(session.id)}" data-tone="${escapeHtml(result.tone)}"${collapsed ? "" : " open"}>
+  // The final assistant reply is already rendered in its conversation turn.
+  // Keep this card strictly for optional run metadata so the detail view does
+  // not repeat the same answer twice.
+  if (!files.length && !commands.length && !testItems.length && !warnings.length) return "";
+  const resultKey = `${session.id}:${result.turnId || "latest"}`;
+  const expanded = state.expandedResults.has(resultKey);
+  const highlights = [
+    files.length ? `${files.length} 个文件` : null,
+    testItems.length ? result.testStatus : null,
+    commands.length ? `${commands.length} 条命令` : null,
+    warnings.length ? `${warnings.length} 条提醒` : null,
+  ].filter(Boolean).join(" · ");
+  return `<details class="task-result" data-task-result="${escapeHtml(resultKey)}" data-tone="${escapeHtml(result.tone)}"${expanded ? " open" : ""}>
     <summary class="task-result-summary">
       <span class="task-result-mark" aria-hidden="true">${result.status === "completed" ? "✓" : result.status === "failed" ? "!" : "■"}</span>
-      <span class="task-result-heading"><small>RESULT</small><b>${escapeHtml(result.title)}</b></span>
+      <span class="task-result-heading"><small>附带信息</small><b>${escapeHtml(highlights || "查看运行附带信息")}</b></span>
       <span class="task-result-summary-meta">${result.completedAt ? `<time>${relativeTime(result.completedAt)}</time>` : ""}<i class="task-result-chevron" aria-hidden="true"></i></span>
     </summary>
     <div class="task-result-body">
-      ${result.conclusion ? `<section class="task-result-message turn-message turn-assistant"><header><b>Codex</b><span class="turn-message-meta"><button class="message-copy" type="button" data-copy-result="${escapeHtml(session.id)}" aria-label="复制本轮结果">复制</button></span></header><div class="timeline-message"><div class="timeline-rich" data-timeline-text>${renderMarkdownBlocks(result.conclusion)}</div></div></section>` : ""}
       ${files.length ? `<div class="task-result-section"><b>涉及文件</b><ul class="task-result-files">${files.map((file) => `<li><code>${escapeHtml(file)}</code></li>`).join("")}</ul></div>` : ""}
       ${testItems.length ? `<div class="task-result-section"><b>${escapeHtml(result.testStatus)}</b><ul>${testItems.map((test) => `<li>${escapeHtml(test)}</li>`).join("")}</ul><small>这里只表示捕获到验证命令；是否通过以 Codex 最终回复和完整输出为准。</small></div>` : ""}
       ${commands.length ? `<details class="task-result-commands"><summary>运行记录 · ${commands.length}</summary><ul>${commands.map((command) => `<li><span>${escapeHtml(command.tool)}</span><code>${escapeHtml(command.summary)}</code></li>`).join("")}</ul></details>` : ""}
@@ -2294,28 +2312,24 @@ function syncMarkup(element, markup, { canonical = false } = {}) {
   return true;
 }
 
-function syncDetailContent({ control, result, conversationMarkup, retention, technical }) {
+function syncDetailContent({ control, conversationMarkup, retention, technical }) {
   let controlSlot = elements.detailContent.querySelector(":scope > [data-detail-control]");
-  let resultSlot = elements.detailContent.querySelector(":scope > [data-detail-result]");
   let conversationSlot = elements.detailContent.querySelector(":scope > [data-detail-conversation]");
   let retentionSlot = elements.detailContent.querySelector(":scope > [data-detail-retention]");
   let technicalSlot = elements.detailContent.querySelector(":scope > [data-detail-technical]");
-  if (!controlSlot || !resultSlot || !conversationSlot || !retentionSlot || !technicalSlot) {
+  if (!controlSlot || !conversationSlot || !retentionSlot || !technicalSlot) {
     syncMarkup(elements.detailContent, `
       <div class="detail-update-slot"><button class="detail-update" type="button" data-refresh-detail hidden><span>有新状态</span>更新</button></div>
       <div data-detail-control></div>
-      <div data-detail-result></div>
       <div class="conversation" data-detail-conversation aria-label="对话历史"></div>
       <div data-detail-retention></div>
       <div data-detail-technical></div>`);
     controlSlot = elements.detailContent.querySelector(":scope > [data-detail-control]");
-    resultSlot = elements.detailContent.querySelector(":scope > [data-detail-result]");
     conversationSlot = elements.detailContent.querySelector(":scope > [data-detail-conversation]");
     retentionSlot = elements.detailContent.querySelector(":scope > [data-detail-retention]");
     technicalSlot = elements.detailContent.querySelector(":scope > [data-detail-technical]");
   }
   syncMarkup(controlSlot, control);
-  syncMarkup(resultSlot, result);
   // Timeline expanders change their hidden state after layout. Compare the
   // canonical business markup here so that a control-only refresh does not
   // mistake that presentational DOM change for a new conversation.
@@ -2364,7 +2378,6 @@ function renderDetails(session, { loading = false } = {}) {
     `);
   syncDetailContent({
     control: `${commandStateMarkup(session)}${showControlNotice ? `<div class="control-note${controlIsImportant ? "" : " is-compact"}"><b>${escapeHtml(controlChannelLabel(session))}</b><p>${escapeHtml(controlExplanation(session))}</p></div>` : ""}${queuedCommandsMarkup(session)}`,
-    result: taskResultMarkup(session),
     conversationMarkup: loading ? `<div class="conversation-loading"><i></i><i></i><i></i></div>` : conversation(session.events, session),
     retention: session.historyTruncated ? `<p class="history-retention-note">较早的运行过程已压缩；提问和回复会优先保留。</p>` : "",
     technical: `<details class="technical-details"${technicalOpen ? " open" : ""}>
@@ -3694,33 +3707,6 @@ elements.detail.addEventListener("click", (event) => {
       });
     return;
   }
-  const resultCopyButton = event.target.closest("[data-copy-result]");
-  if (resultCopyButton) {
-    const session = state.detailSessions.get(resultCopyButton.dataset.copyResult);
-    const message = session?.result?.conclusion || "";
-    resultCopyButton.disabled = true;
-    void writeClipboardText(message)
-      .then(() => {
-        resultCopyButton.dataset.copyState = "copied";
-        resultCopyButton.classList.add("is-copied");
-        resultCopyButton.textContent = "已复制";
-        resultCopyButton.setAttribute("aria-label", "本轮结果已复制");
-        toast("本轮结果已复制");
-        setTimeout(() => {
-          if (!resultCopyButton.isConnected || resultCopyButton.dataset.copyState !== "copied") return;
-          delete resultCopyButton.dataset.copyState;
-          resultCopyButton.classList.remove("is-copied");
-          resultCopyButton.textContent = "复制";
-          resultCopyButton.setAttribute("aria-label", "复制本轮结果");
-          resultCopyButton.disabled = false;
-        }, 1_600);
-      })
-      .catch((error) => {
-        resultCopyButton.disabled = false;
-        toast(error?.message || "复制失败，请长按结果文本复制");
-      });
-    return;
-  }
   const messageButton = event.target.closest("[data-expand-message]");
   if (messageButton) {
     const row = messageButton.closest(".timeline-message");
@@ -3778,8 +3764,8 @@ elements.detail.addEventListener("click", (event) => {
 elements.detail.addEventListener("toggle", (event) => {
   const details = event.target;
   if (details.matches?.("[data-task-result]")) {
-    if (details.open) state.collapsedResults.delete(details.dataset.taskResult);
-    else state.collapsedResults.add(details.dataset.taskResult);
+    if (details.open) state.expandedResults.add(details.dataset.taskResult);
+    else state.expandedResults.delete(details.dataset.taskResult);
   }
   if (details.matches?.("[data-turn-process]")) {
     if (details.open) state.expandedTurnProcesses.add(details.dataset.turnProcess);
