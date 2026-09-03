@@ -502,6 +502,7 @@ export const tests = [
         assert.equal(automatic.body.session.task.title, "Execute requested task");
         assert.equal(automatic.body.session.task.smartTitle, "Execute requested task");
         assert.equal(automatic.body.session.task.customTitle, null);
+        assert.equal(automatic.body.session.inbox.bucket, "running");
         await runtime.store.setAutomaticTaskTitle("session-1", null);
         titleContexts.length = 0;
 
