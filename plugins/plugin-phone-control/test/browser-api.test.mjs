@@ -103,9 +103,9 @@ export const tests = [{
       const cookie = pairing.headers["set-cookie"][0].split(";")[0];
       const browserPage = await request({ port: started.port, pathname: "/browser.html", headers: { cookie } });
       assert.equal(browserPage.status, 200);
-      assert.match(browserPage.body, /browser\.js\?v=79/);
+      assert.match(browserPage.body, /browser\.js\?v=80/);
       assert.equal(browserPage.headers["cache-control"], "no-cache");
-      const browserAsset = await request({ port: started.port, pathname: "/browser.js?v=79", headers: { cookie } });
+      const browserAsset = await request({ port: started.port, pathname: "/browser.js?v=80", headers: { cookie } });
       assert.equal(browserAsset.status, 200);
       assert.match(browserAsset.headers["cache-control"], /immutable/);
       const browser = await request({ port: started.port, pathname: "/api/browser", headers: { cookie } });

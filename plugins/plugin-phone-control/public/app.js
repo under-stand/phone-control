@@ -9,8 +9,9 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=79";
-import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=79";
+} from "./lib/format.js?v=80";
+import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=80";
+import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=80";
 
 function storedCompletionKeys() {
   try {
@@ -127,6 +128,11 @@ const elements = {
   countActive: document.querySelector("#count-active"),
   countHistory: document.querySelector("#count-history"),
   countAll: document.querySelector("#count-all"),
+  actionInbox: document.querySelector("#action-inbox"),
+  actionInboxOpen: document.querySelector("#action-inbox-open"),
+  actionInboxTitle: document.querySelector("#action-inbox-title"),
+  actionInboxReason: document.querySelector("#action-inbox-reason"),
+  actionInboxCount: document.querySelector("#action-inbox-count"),
   filters: document.querySelector(".filters"),
   notify: document.querySelector("#notify"),
   notifyLabel: document.querySelector("#notify-label"),
@@ -226,9 +232,7 @@ function isActiveTask(session) {
 
 function isAttentionTask(session) {
   if (!isUserTask(session)) return false;
-  if (session.status === "waiting" && session.liveness === "recent") return true;
-  const age = Date.now() - new Date(session.updatedAt).getTime();
-  return session.status === "error" && Number.isFinite(age) && age <= 7 * 86_400_000;
+  return taskNeedsAttention(session);
 }
 
 function isRecentTask(session) {
@@ -247,6 +251,9 @@ function taskTopic(session) {
 
 function taskSummary(session) {
   if (sessionDisplayStatus(session) === "disconnected") return "上次执行未收到结束状态，当前不再视为工作中";
+  if (["queued", "blocked", "sending", "accepted", "needs_review"].includes(session.commandState?.state)) {
+    return session.commandState.detail || session.commandState.label;
+  }
   if (session.task?.progress) return session.task.progress;
   if (session.status === "waiting") {
     const action = session.pendingApproval?.kind === "question" ? "需要你回答" : "需要你处理";
@@ -432,8 +439,12 @@ function taskCard(session) {
   const match = taskSearchMatch(session);
   const showGoal = cleanTaskText(goal).toLocaleLowerCase("zh-CN") !== cleanTaskText(taskTitle(session)).toLocaleLowerCase("zh-CN");
   const machine = session.machineName && session.machineName !== projectName(session) ? ` · ${session.machineName}` : "";
-  const waiting = session.pendingApproval
-    ? `<div class="attention"><span>!</span><div><b>${session.pendingApproval.kind === "question" ? "需要回答" : "需要审批"}</b><small>${escapeHtml(session.pendingApproval.reason)}</small></div></div>`
+  const waiting = isAttentionTask(session)
+    ? `<div class="attention"><span>!</span><div><b>${escapeHtml(session.inbox?.label || (session.pendingApproval?.kind === "question" ? "需要回答" : "需要处理"))}</b><small>${escapeHtml(session.inbox?.reason || session.pendingApproval?.reason || session.statusReason || "打开任务查看")}</small></div></div>`
+    : "";
+  const command = commandStateView(session.commandState);
+  const commandChip = command && !["completed", "canceled", "expired"].includes(command.state)
+    ? `<span class="card-command-state" data-tone="${escapeHtml(command.tone)}">${escapeHtml(command.label)}</span>`
     : "";
   const liveness = displayStatus === "disconnected"
     ? `<div class="liveness-note">未收到完成或失败事件 · 最后活动于 ${relativeTime(session.lastSeenAt)}</div>`
@@ -445,7 +456,7 @@ function taskCard(session) {
       <div class="task-accent"></div>
       <header>
         <div class="task-source"><span>${session.surface === "Desktop" ? "▣" : session.surface === "CLI" ? ">_" : "◇"}</span>${escapeHtml(session.surface)}</div>
-        <time>${relativeTime(session.updatedAt)}</time>
+        <span class="task-card-meta">${commandChip}<time>${relativeTime(session.updatedAt)}</time></span>
       </header>
       <div class="task-title-row">
         <div><h3>${highlightedSearchText(taskTitle(session))}</h3><p>${escapeHtml(projectName(session))}${escapeHtml(machine)}</p></div>
@@ -479,7 +490,7 @@ function render() {
       const right = resultRank.has(b.id) ? resultRank.get(b.id) : Number.MAX_SAFE_INTEGER;
       if (left !== right) return left - right;
     }
-    return b.updatedAt.localeCompare(a.updatedAt);
+    return compareTaskUrgency(a, b);
   });
   const userTasks = sessions.filter(isUserTask);
   const visible = sessions.filter(filterMatches);
@@ -488,6 +499,15 @@ function render() {
   elements.countActive.textContent = userTasks.filter(isActiveTask).length;
   elements.countHistory.textContent = userTasks.filter((session) => !isRecentTask(session)).length;
   elements.countAll.textContent = userTasks.length;
+  const overview = inboxOverview(userTasks);
+  elements.actionInbox.hidden = overview.attention === 0;
+  if (overview.attention) {
+    elements.actionInboxCount.textContent = overview.attention;
+    elements.actionInboxTitle.textContent = overview.actionable
+      ? `${overview.actionable} 项等待你的操作`
+      : `${overview.attention} 项需要查看`;
+    elements.actionInboxReason.textContent = overview.top?.inbox?.reason || "打开后按优先级处理";
+  }
   updateSyncSummary();
   if (state.searchQuery) {
     elements.list.innerHTML = visible.length ? taskGroup("搜索结果", visible, false) : "";
@@ -2190,6 +2210,32 @@ function queuedCommandsMarkup(session) {
   </section>`;
 }
 
+function commandStateMarkup(session) {
+  const command = commandStateView(session.commandState);
+  if (!command) return "";
+  return `<section class="command-lifecycle" data-tone="${escapeHtml(command.tone)}" aria-label="最近手机指令状态">
+    <span class="command-lifecycle-mark" aria-hidden="true"></span>
+    <div><small>最近手机指令</small><b>${escapeHtml(command.label)}</b><p>${escapeHtml(command.detail || "等待状态同步")}</p></div>
+  </section>`;
+}
+
+function taskResultMarkup(session) {
+  const result = resultView(session.result);
+  if (!result?.hasContent) return "";
+  const files = Array.isArray(result.files) ? result.files : [];
+  const commands = Array.isArray(result.commands) ? result.commands : [];
+  const testItems = Array.isArray(result.tests?.items) ? result.tests.items : [];
+  const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+  return `<section class="task-result" data-tone="${escapeHtml(result.tone)}" aria-label="${escapeHtml(result.title)}">
+    <header><span class="task-result-mark" aria-hidden="true">${result.status === "completed" ? "✓" : result.status === "failed" ? "!" : "■"}</span><div><small>RESULT</small><h3>${escapeHtml(result.title)}</h3></div>${result.completedAt ? `<time>${relativeTime(result.completedAt)}</time>` : ""}</header>
+    ${result.conclusion ? `<div class="task-result-conclusion timeline-rich">${renderMarkdownBlocks(result.conclusion)}</div>` : ""}
+    ${files.length ? `<div class="task-result-section"><b>涉及文件</b><ul class="task-result-files">${files.map((file) => `<li><code>${escapeHtml(file)}</code></li>`).join("")}</ul></div>` : ""}
+    ${testItems.length ? `<div class="task-result-section"><b>${escapeHtml(result.testStatus)}</b><ul>${testItems.map((test) => `<li>${escapeHtml(test)}</li>`).join("")}</ul><small>这里只表示捕获到验证命令；是否通过以 Codex 最终回复和完整输出为准。</small></div>` : ""}
+    ${commands.length ? `<details class="task-result-commands"><summary>运行记录 · ${commands.length}</summary><ul>${commands.map((command) => `<li><span>${escapeHtml(command.tool)}</span><code>${escapeHtml(command.summary)}</code></li>`).join("")}</ul></details>` : ""}
+    ${warnings.length ? `<div class="task-result-warnings"><b>注意</b>${warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
+  </section>`;
+}
+
 function controlChannelLabel(session) {
   if (sessionDisplayStatus(session) === "disconnected") return "连接已中断 · 只读";
   if (session.control?.handedOff) return "已移交电脑 · 手机只读";
@@ -2240,24 +2286,28 @@ function syncMarkup(element, markup, { canonical = false } = {}) {
   return true;
 }
 
-function syncDetailContent({ control, conversationMarkup, retention, technical }) {
+function syncDetailContent({ control, result, conversationMarkup, retention, technical }) {
   let controlSlot = elements.detailContent.querySelector(":scope > [data-detail-control]");
+  let resultSlot = elements.detailContent.querySelector(":scope > [data-detail-result]");
   let conversationSlot = elements.detailContent.querySelector(":scope > [data-detail-conversation]");
   let retentionSlot = elements.detailContent.querySelector(":scope > [data-detail-retention]");
   let technicalSlot = elements.detailContent.querySelector(":scope > [data-detail-technical]");
-  if (!controlSlot || !conversationSlot || !retentionSlot || !technicalSlot) {
+  if (!controlSlot || !resultSlot || !conversationSlot || !retentionSlot || !technicalSlot) {
     syncMarkup(elements.detailContent, `
       <div class="detail-update-slot"><button class="detail-update" type="button" data-refresh-detail hidden><span>有新状态</span>更新</button></div>
       <div data-detail-control></div>
+      <div data-detail-result></div>
       <div class="conversation" data-detail-conversation aria-label="对话历史"></div>
       <div data-detail-retention></div>
       <div data-detail-technical></div>`);
     controlSlot = elements.detailContent.querySelector(":scope > [data-detail-control]");
+    resultSlot = elements.detailContent.querySelector(":scope > [data-detail-result]");
     conversationSlot = elements.detailContent.querySelector(":scope > [data-detail-conversation]");
     retentionSlot = elements.detailContent.querySelector(":scope > [data-detail-retention]");
     technicalSlot = elements.detailContent.querySelector(":scope > [data-detail-technical]");
   }
   syncMarkup(controlSlot, control);
+  syncMarkup(resultSlot, result);
   // Timeline expanders change their hidden state after layout. Compare the
   // canonical business markup here so that a control-only refresh does not
   // mistake that presentational DOM change for a new conversation.
@@ -2305,7 +2355,8 @@ function renderDetails(session, { loading = false } = {}) {
     </div>
     `);
   syncDetailContent({
-    control: `${showControlNotice ? `<div class="control-note${controlIsImportant ? "" : " is-compact"}"><b>${escapeHtml(controlChannelLabel(session))}</b><p>${escapeHtml(controlExplanation(session))}</p></div>` : ""}${queuedCommandsMarkup(session)}`,
+    control: `${commandStateMarkup(session)}${showControlNotice ? `<div class="control-note${controlIsImportant ? "" : " is-compact"}"><b>${escapeHtml(controlChannelLabel(session))}</b><p>${escapeHtml(controlExplanation(session))}</p></div>` : ""}${queuedCommandsMarkup(session)}`,
+    result: taskResultMarkup(session),
     conversationMarkup: loading ? `<div class="conversation-loading"><i></i><i></i><i></i></div>` : conversation(session.events, session),
     retention: session.historyTruncated ? `<p class="history-retention-note">较早的运行过程已压缩；提问和回复会优先保留。</p>` : "",
     technical: `<details class="technical-details"${technicalOpen ? " open" : ""}>
@@ -3415,6 +3466,11 @@ elements.filters.addEventListener("click", (event) => {
   if (!button) return;
   if (state.searchQuery) state.filterBeforeSearch = button.dataset.filter;
   setTaskFilter(button.dataset.filter);
+});
+
+elements.actionInboxOpen.addEventListener("click", () => {
+  setTaskFilter("attention");
+  elements.filters.scrollIntoView({ behavior: "smooth", block: "nearest" });
 });
 
 elements.taskSearch.addEventListener("submit", (event) => {

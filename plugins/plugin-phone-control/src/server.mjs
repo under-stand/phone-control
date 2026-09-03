@@ -20,6 +20,7 @@ import { BrowserControlLeaseStore } from "./browser-control-lease.mjs";
 import { BrowserExtensionBroker } from "./browser-extension-broker.mjs";
 import { CompletionPolicy } from "./completion-policy.mjs";
 import { CommandOutbox } from "./command-outbox.mjs";
+import { deriveCommandState } from "./command-state.mjs";
 import { permissionProfileFromContext } from "./codex-permissions.mjs";
 import { DeviceStore } from "./device-store.mjs";
 import { ImageStore, MAX_IMAGE_BYTES } from "./image-store.mjs";
@@ -30,6 +31,7 @@ import { inspectCodexRuntime } from "./runtime-diagnostics.mjs";
 import { nodeRuntimeStatus } from "./service-diagnostics.mjs";
 import { SessionStore } from "./session-store.mjs";
 import { TaskTitleGenerator } from "./task-title-generator.mjs";
+import { deriveTaskInbox } from "./task-inbox.mjs";
 import { drainSpool } from "./spool.mjs";
 import { PHONE_CONTROL_VERSION } from "./version.mjs";
 
@@ -451,10 +453,19 @@ export async function createPhoneControlServer({
   const sseClients = new Set();
   const browserStreamClients = new Set();
   const visibleSessionIds = new Set(store.list({ taskKind: "user" }).map((session) => session.id));
-  const sessionPayload = (session, deviceId = null) => ({
-    ...session,
-    queuedCommands: outbox.list({ sessionId: session.id, deviceId, includeTerminal: false }),
-  });
+  const sessionPayload = (session, deviceId = null) => {
+    const queuedCommands = outbox.list({ sessionId: session.id, deviceId, includeTerminal: false });
+    const commandState = deriveCommandState(session, {
+      queuedCommands: outbox.list({ sessionId: session.id, deviceId, includeTerminal: true }),
+      liveCommands: bridge?.listCommands?.({ sessionId: session.id, deviceId }) || [],
+    });
+    return {
+      ...session,
+      queuedCommands,
+      commandState,
+      inbox: deriveTaskInbox(session, commandState),
+    };
+  };
   const visibleSessions = (deviceId = null) => store.list({ taskKind: "user" })
     .map((session) => sessionPayload(session, deviceId));
   const queueBrowserFrame = (client, frame) => {
@@ -656,7 +667,10 @@ export async function createPhoneControlServer({
   }
   outbox.on("change", (entry) => {
     for (const client of sseClients) {
-      if (client.deviceId === entry.deviceId) sendSse(client.response, "outbox", outbox.public(entry));
+      if (client.deviceId !== entry.deviceId) continue;
+      sendSse(client.response, "outbox", outbox.public(entry));
+      const session = store.getSummary(entry.sessionId);
+      if (session?.taskKind === "user") sendSse(client.response, "session", sessionPayload(session, client.deviceId));
     }
     void processOutbox();
   });

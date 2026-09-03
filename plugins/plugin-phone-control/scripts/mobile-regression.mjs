@@ -178,6 +178,13 @@ class AuditBridge extends EventEmitter {
     return command;
   }
 
+  listCommands({ sessionId = null, deviceId = null } = {}) {
+    return this.createdSessions.filter((command) => (
+      (!sessionId || command.sessionId === sessionId)
+      && (!deviceId || !command.decidedBy || command.decidedBy === deviceId)
+    ));
+  }
+
   async deleteSession({ sessionId }, device) {
     const state = this.threads.get(sessionId);
     assert.notEqual(state?.status, "active", "the mobile UI must not delete an active Codex session");
@@ -313,11 +320,14 @@ https://inside-fence.example
   runtime.store.ingest(event("thread-active", 72, "assistant_message", { source: "rollout", turnId: null, phase: "final_answer", message: { role: "assistant", text: finalAssistantReply } }));
   bridge.set("thread-active", { status: "active", activeFlags: [], activeTurnId: "turn-thread-active" });
 
+  runtime.store.ingest(event("thread-failed", 70, "user_prompt", { turnId: "turn-thread-failed", message: { role: "user", text: "检查失败的发布任务。" } }));
+  runtime.store.ingest(event("thread-failed", 71, "error", { turnId: "turn-thread-failed", message: { role: "system", text: "发布验证失败，请查看日志。" } }));
+
   let historyIndex = 1;
   for (let turn = 1; turn <= 34; turn += 1) {
     const turnId = `turn-thread-history-${turn}`;
     runtime.store.ingest(event("thread-history", historyIndex++, "user_prompt", { turnId, message: { role: "user", text: `历史任务 ${turn}：检查这一轮的实现和结果。` } }));
-    runtime.store.ingest(event("thread-history", historyIndex++, "tool_start", { turnId, tool: { name: turn % 2 ? "exec" : "apply_patch", summary: "处理历史任务" } }));
+    runtime.store.ingest(event("thread-history", historyIndex++, "tool_start", { turnId, tool: { name: turn === 34 ? "exec_command" : turn % 2 ? "exec" : "apply_patch", summary: turn === 34 ? "npm run verify:release" : "处理历史任务" } }));
     runtime.store.ingest(event("thread-history", historyIndex++, "assistant_message", { turnId, message: { role: "assistant", text: `历史回复 ${turn}：这里是一段足够长的文字，用于确认手机上按轮次浏览消息，不会被工具活动淹没。`.repeat(3) } }));
     runtime.store.ingest(event("thread-history", historyIndex++, "turn_complete", { turnId }));
   }
@@ -379,6 +389,12 @@ https://inside-fence.example
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${started.port}/?token=mobile-audit-token`, { waitUntil: "domcontentloaded" });
   await page.locator('[data-session-id="thread-active"]').waitFor();
+  await page.locator("#action-inbox:not([hidden])").waitFor();
+  assert.match(await page.locator("#action-inbox").innerText(), /行动收件箱[\s\S]*1 项/);
+  await page.locator("#action-inbox-open").click();
+  assert.match(await page.locator('[data-filter="attention"]').getAttribute("class"), /active/);
+  assert.equal(await page.locator('[data-session-id="thread-failed"]').count(), 1, "the action inbox must reveal the failed task needing review");
+  await page.locator('[data-filter="recent"]').click();
   assert.equal(await page.locator('[data-session-id="hook-timing"]').count(), 0, "legacy hook timing diagnostics must not appear as recent tasks");
   assert.doesNotMatch(await page.locator('[data-session-id="thread-active"]').innerText(), /:?-{3,}:?/, "task summaries must not leak Markdown table syntax");
   await page.locator('#connection[data-state="online"]').waitFor();
@@ -462,6 +478,8 @@ https://inside-fence.example
   const highlightedHistoricalReply = page.locator('#detail[open] .turn-message.search-hit').filter({ hasText: /历史回复 12/ });
   await highlightedHistoricalReply.waitFor();
   assert.equal(await highlightedHistoricalReply.count(), 1, "opening a search result must reveal and highlight the exact matching historical reply");
+  assert.equal(await page.locator("#detail[open] .task-result").count(), 1, "a completed task must expose one structured result card");
+  assert.match(await page.locator("#detail[open] .task-result").innerText(), /本轮结果[\s\S]*历史回复 34[\s\S]*已运行验证[\s\S]*npm run verify:release/);
   await page.locator("#detail-close").click();
   await page.locator("#task-search-clear").click();
   assert.match(await page.locator('[data-filter="recent"]').getAttribute("class"), /active/, "clearing search must restore the previous task scope");

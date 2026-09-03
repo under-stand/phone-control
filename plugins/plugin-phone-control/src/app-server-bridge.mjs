@@ -1281,6 +1281,14 @@ export class CodexAppServerBridge extends EventEmitter {
     this.commands.delete(oldest);
   }
 
+  listCommands({ sessionId = null, deviceId = null } = {}) {
+    return Array.from(this.commands.values())
+      .filter((command) => (!sessionId || command.sessionId === sessionId)
+        && (!deviceId || !command.decidedBy || command.decidedBy === deviceId))
+      .map((command) => JSON.parse(JSON.stringify(command)))
+      .sort((left, right) => String(right.deliveredAt || right.sentAt || "").localeCompare(String(left.deliveredAt || left.sentAt || "")));
+  }
+
   pruneNativeApprovals() {
     while (this.nativeApprovals.size > MAX_COMMAND_RECORDS) {
       const oldestResolved = Array.from(this.nativeApprovals.entries())
@@ -1358,6 +1366,7 @@ export class CodexAppServerBridge extends EventEmitter {
     } catch (error) {
       command.status = error.rpcError ? "rejected" : "delivery_unknown";
       command.delivery = error.rpcError ? "not_delivered" : "unknown";
+      command.lastError = clampText(error.message, 300);
       if (threadId && error.rpcError) {
         try {
           await this.request("thread/delete", { threadId });
@@ -1740,6 +1749,7 @@ export class CodexAppServerBridge extends EventEmitter {
     } catch (error) {
       command.status = error.rpcError ? "rejected" : "delivery_unknown";
       command.delivery = error.rpcError ? "not_delivered" : "unknown";
+      command.lastError = clampText(error.message, 300);
       this.auditCommand(error.rpcError ? "phone_input_rejected" : "phone_input_delivery_unknown", command, {
         error: clampText(error.message, 300),
       });

@@ -113,6 +113,13 @@ class TestAppServerBridge extends EventEmitter {
     this.emit("status", this.status());
   }
 
+  listCommands({ sessionId = null, deviceId = null } = {}) {
+    return Array.from(this.commands.values()).filter((command) => (
+      (!sessionId || command.sessionId === sessionId)
+      && (!deviceId || !command.decidedBy || command.decidedBy === deviceId)
+    ));
+  }
+
   async answer(id, body, device) {
     if (id !== this.interaction?.id) throw Object.assign(new Error("Question not found"), { statusCode: 404 });
     if (body.sessionId !== this.interaction.sessionId || body.turnId !== this.interaction.turnId) {
@@ -419,13 +426,13 @@ export const tests = [
         const page = await request({ port: started.port, pathname: "/" });
         assert.equal(page.status, 200);
         assert.match(page.headers["content-security-policy"], /default-src 'self'/);
-        assert.match(page.body, /app\.js\?v=79/);
+        assert.match(page.body, /app\.js\?v=80/);
         assert.match(page.body, /id="task-title">任务</);
         assert.doesNotMatch(page.body, /id="metrics"|任务概览|会话列表/);
 
         const compressedAsset = await request({
           port: started.port,
-          pathname: "/app.js?v=79",
+          pathname: "/app.js?v=80",
           headers: { "accept-encoding": "gzip" },
         });
         assert.equal(compressedAsset.status, 200);
@@ -920,7 +927,7 @@ export const tests = [
         assert.equal(detail.body.session.control.canAnswer, true);
         const status = await request({ port: started.port, pathname: "/api/status", headers: { cookie } });
         assert.equal(status.status, 200);
-        assert.equal(status.body.version, "0.11.2");
+        assert.equal(status.body.version, "0.12.0");
         assert.equal(status.body.codexHome, undefined);
         assert.equal(status.body.device, undefined);
         assert.equal(status.body.appServer.threadStates, undefined);
@@ -1281,6 +1288,9 @@ export const tests = [
         assert.equal(bridge.commands.get("phone-queued-api-0001").text, "继续检查测试结果");
         const after = await request({ port: started.port, pathname: "/api/sessions/thread-outbox/queued-commands", headers: { cookie } });
         assert.equal(after.body.queued[0].status, "delivered");
+        const projected = await request({ port: started.port, pathname: "/api/sessions/thread-outbox", headers: { cookie } });
+        assert.equal(projected.body.session.commandState.state, "running");
+        assert.equal(projected.body.session.inbox.bucket, "running");
         const stale = await request({
           port: started.port,
           pathname: "/api/sessions/thread-outbox/queue",
@@ -1296,6 +1306,9 @@ export const tests = [
         }
         const staleList = await request({ port: started.port, pathname: "/api/sessions/thread-outbox/queued-commands", headers: { cookie } });
         assert.equal(staleList.body.queued.find((entry) => entry.id === "phone-queued-api-0002").status, "needs_review");
+        const review = await request({ port: started.port, pathname: "/api/sessions/thread-outbox", headers: { cookie } });
+        assert.equal(review.body.session.commandState.state, "needs_review");
+        assert.equal(review.body.session.inbox.action, "review_delivery");
       } finally {
         await runtime.close();
         await rm(dataDir, { recursive: true, force: true });

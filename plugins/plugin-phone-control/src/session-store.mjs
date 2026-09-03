@@ -3,6 +3,7 @@ import { appendFile, chmod, mkdir, open, readFile, rename, stat, writeFile } fro
 import { dirname } from "node:path";
 import { clampText, inferSurface, isCodexInjectedUserMessage, isoTime } from "./utils.mjs";
 import { buildTaskSearchDocument, buildTaskTitleContext, isMeaningfulTaskPrompt, searchTaskDocuments } from "./task-semantics.mjs";
+import { deriveTaskResult, summarizeTaskResult } from "./task-result.mjs";
 
 const MAX_SESSION_EVENTS = 240;
 const MAX_SEEN_EVENTS = 8_000;
@@ -808,8 +809,9 @@ export class SessionStore extends EventEmitter {
     // to delete them again in publicSummary(). On larger histories that wasted
     // work can dominate a mobile refresh.
     const boundedEventLimit = Number.isFinite(eventLimit) ? Math.max(0, Math.floor(eventLimit)) : null;
-    const selectedEvents = (boundedEventLimit == null ? session.events : session.events.slice(-boundedEventLimit))
-      .map(publicEvent);
+    const selectedEvents = includeEvents
+      ? (boundedEventLimit == null ? session.events : session.events.slice(-boundedEventLimit)).map(publicEvent)
+      : [];
     const source = includeEvents
       ? { ...session, events: selectedEvents }
       : Object.fromEntries(Object.entries(session).filter(([key]) => key !== "events"));
@@ -827,6 +829,8 @@ export class SessionStore extends EventEmitter {
     copy.machineName = copy.machineName || this.machineName;
     copy.taskKind = sessionTaskKind(session);
     copy.task = this.taskDocument(session).task;
+    const result = deriveTaskResult(session);
+    copy.result = includeEvents ? result : summarizeTaskResult(result);
     copy.hiddenFromTasks = copy.taskKind !== "user";
     copy.historyTruncated = Boolean(session.eventsDiscarded);
     copy.hasTranscript = Boolean(session.transcriptPath);
@@ -864,6 +868,11 @@ export class SessionStore extends EventEmitter {
   get(id, { eventLimit = null } = {}) {
     const session = this.sessions.get(id);
     return session ? this.publicSession(session, { eventLimit }) : null;
+  }
+
+  getSummary(id) {
+    const session = this.sessions.get(id);
+    return session ? this.publicSummary(session) : null;
   }
 
   taskDocument(session) {
