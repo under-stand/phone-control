@@ -485,9 +485,9 @@ https://inside-fence.example
   const resultCard = page.locator("#detail[open] .task-result");
   assert.equal(await resultCard.locator(".task-result-message h4").count(), 1, "the result conclusion must use the same Markdown heading renderer as conversation turns");
   assert.equal(await resultCard.getAttribute("open"), "", "result cards should open initially for a fresh detail view");
-  await resultCard.locator("summary").click();
+  await resultCard.locator(":scope > summary").click();
   assert.equal(await resultCard.getAttribute("open"), null, "result cards should collapse from their summary");
-  await resultCard.locator("summary").click();
+  await resultCard.locator(":scope > summary").click();
   assert.equal(await resultCard.getAttribute("open"), "", "result cards should reopen without losing their content");
   await page.locator("#detail-close").click();
   await page.locator("#task-search-clear").click();
