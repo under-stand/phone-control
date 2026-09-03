@@ -1,6 +1,6 @@
 {
   "name": "plugin-phone-control",
-  "version": "0.11.0+codex.20260902150000",
+  "version": "0.11.2+codex.20260903160053",
   "description": "Track and control local Codex sessions and Chrome tabs from a paired phone.",
   "author": {
     "name": "Phone Control contributors"

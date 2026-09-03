@@ -1,6 +1,6 @@
 {
   "name": "plugin-phone-control",
-  "version": "0.11.0",
+  "version": "0.11.2",
   "description": "Local-first mobile task and Chrome control dashboard for Codex Desktop and CLI.",
   "type": "module",
   "private": true,
@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node ./bin/phone-control.mjs start",
     "doctor": "node ./bin/phone-control.mjs doctor",
+    "check:protocol": "node ./scripts/check-codex-protocol.mjs",
     "smoke:approval": "node ./scripts/smoke-approval.mjs",
     "smoke:approval:protocol": "node ./scripts/smoke-approval.mjs",
     "smoke:status": "node ./scripts/smoke-status.mjs",
@@ -21,7 +22,8 @@
     "test": "node ./scripts/run-tests.mjs",
     "test:mobile": "node ./scripts/mobile-regression.mjs",
     "test:browser": "node ./scripts/browser-mobile-regression.mjs",
-    "verify": "npm run check && npm test"
+    "verify": "npm run check && npm test",
+    "verify:release": "npm run verify && npm run check:protocol"
   },
   "dependencies": {
     "qrcode": "1.5.4",

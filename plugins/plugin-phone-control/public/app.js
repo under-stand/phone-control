@@ -9,8 +9,8 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=78";
-import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=78";
+} from "./lib/format.js?v=79";
+import { assistantReplyGroups, conversationTurns } from "./lib/conversation.js?v=79";
 
 function storedCompletionKeys() {
   try {
@@ -2200,6 +2200,7 @@ function controlChannelLabel(session) {
   if (session.control?.action === "start") return "可继续会话";
   if (session.control?.action === "resume") return "可恢复会话";
   if (session.control?.reason?.startsWith("A stop request was delivered")) return "正在停止";
+  if (session.control?.reason?.startsWith("Live control is synchronizing:")) return session.surface === "CLI" ? "CLI 可追踪 · 控制同步中" : "正在同步控制";
   if (session.control?.reason?.startsWith("Live control unavailable:")) return "控制已隔离 · 只读";
   if (!session.control?.live && session.liveness === "recent" && ["working", "waiting"].includes(session.status)) return "正在恢复连接";
   if (isUserTask(session) && !session.control?.canSend && !session.control?.canAnswer && !session.control?.canApprove) return "可排队续作";
@@ -2219,6 +2220,7 @@ function controlExplanation(session) {
   if (session.control?.action === "start") return "这个 thread 当前空闲，可以直接开始下一轮。";
   if (session.control?.action === "resume") return "Phone Control 会先恢复本机 thread，再开始下一轮。";
   if (session.control?.reason?.startsWith("A stop request was delivered")) return "停止请求已送达 Codex，正在等待当前 turn 确认结束。会话仍会保留。";
+  if (session.control?.reason?.startsWith("Live control is synchronizing:")) return "任务状态与历史仍在正常追踪；Phone Control 正在重新验证实时控制通道，恢复后会自动开放可用操作。";
   if (session.control?.reason?.startsWith("Live control unavailable:")) return "Phone Control 已隔离这个会话的实时控制，避免异常大消息反复拖断其他会话；历史追踪仍可使用。重启服务后会重新验证。";
   if (session.control?.live) return "现场连接已验证，但当前状态暂不适合发送新指令。";
   if (session.liveness === "recent" && ["working", "waiting"].includes(session.status)) return "App Server 正在恢复连接；草稿会保留，连接验证完成后即可继续发送。";
@@ -2876,7 +2878,8 @@ function renderStatus(payload) {
   const runtime = payload.runtime || {};
   const configuration = codex.configuration || {};
   const appServer = payload.appServer || {};
-  const connected = Boolean(appServer.connected && appServer.initialized);
+  const serviceConnected = Boolean(payload.ready);
+  const controlConnected = Boolean(payload.controlReady ?? (appServer.connected && appServer.initialized));
   const model = session?.model || configuration.model || "Unknown";
   const modelDetails = [configuration.reasoningEffort ? `推理 ${configuration.reasoningEffort}` : null, configuration.serviceTier].filter(Boolean).join(" · ");
   const account = codex.account
@@ -2895,9 +2898,9 @@ function renderStatus(payload) {
     <section class="status-block"><p class="status-block-label">当前会话</p><p class="detail-empty">还没有可展示的 Codex 会话。</p></section>`;
 
   elements.statusContent.innerHTML = `
-    <section class="status-health" data-state="${connected ? "online" : "offline"}">
+    <section class="status-health" data-state="${serviceConnected ? "online" : "offline"}">
       <span></span>
-      <div><b>${connected ? "连接正常" : "连接不可用"}</b><small>${connected ? "会话状态与手机操作已同步" : "Phone Control 会继续尝试恢复"}</small></div>
+      <div><b>${serviceConnected ? "Phone Control 已连接" : "Phone Control 正在启动"}</b><small>${serviceConnected ? (controlConnected ? "任务追踪与手机控制均可用" : "任务追踪可用，实时控制正在恢复") : "页面会继续尝试恢复"}</small></div>
     </section>
     ${selected}
     <section class="status-block">
@@ -2908,7 +2911,8 @@ function renderStatus(payload) {
     </section>
     ${runtime.restartRecommended ? `<p class="status-warning">Codex App Server 仍是升级前版本，请重启 Codex 后再继续使用手机控制。</p>` : ""}
     ${runtime.phoneControlNode && !runtime.phoneControlNode.supported ? `<p class="status-warning">后台正在使用 ${escapeHtml(runtime.phoneControlNode.version)}；建议迁移到 Node ${escapeHtml(runtime.phoneControlNode.minimumMajor)} 或更新版本以继续获得安全更新。</p>` : ""}
-    ${(appServer.unavailableThreadCount ?? appServer.unavailableThreads?.length ?? 0) ? `<p class="status-warning">有 ${escapeHtml(appServer.unavailableThreadCount ?? appServer.unavailableThreads.length)} 个临时会话只能查看。</p>` : ""}
+    ${appServer.retryingSubscriptions ? `<p class="status-callout">正在恢复 ${escapeHtml(appServer.retryingSubscriptions)} 个会话的实时控制；CLI 状态追踪和历史查看不受影响。</p>` : ""}
+    ${appServer.unavailableThreadCount ? `<p class="status-warning">有 ${escapeHtml(appServer.unavailableThreadCount)} 个会话的实时控制已隔离；历史查看不受影响。</p>` : ""}
     <details class="status-diagnostics">
       <summary><span>连接与诊断详情</span><small>版本、订阅和功能开关</small></summary>
       <section class="status-block">
@@ -2916,7 +2920,8 @@ function renderStatus(payload) {
         <p class="diagnostic-agent">${escapeHtml(appServer.server?.userAgent || codex.server?.userAgent || appServer.transport || "App Server 信息不可用")}</p>
         <dl class="status-grid service-grid">
           <div><dt>版本</dt><dd>v${escapeHtml(payload.version || "Unknown")}</dd></div>
-          <div><dt>服务</dt><dd>${payload.ready ? "已就绪" : "正在启动或恢复"}</dd></div>
+          <div><dt>服务</dt><dd>${payload.ready ? "已就绪" : "正在启动"}</dd></div>
+          <div><dt>实时控制</dt><dd>${controlConnected ? "已连接" : "正在恢复"}<small>不影响 Hooks 与历史追踪</small></dd></div>
           <div><dt>主机</dt><dd>${escapeHtml(payload.machineName || "Unknown")}</dd></div>
           <div><dt>Codex CLI</dt><dd>${escapeHtml(runtime.cliVersion || "Unknown")}</dd></div>
           <div><dt>App Server</dt><dd>${escapeHtml(runtime.appServerVersion || "Unknown")}</dd></div>

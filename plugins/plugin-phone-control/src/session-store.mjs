@@ -904,6 +904,7 @@ export class SessionStore extends EventEmitter {
     subscribedThreadSet = null,
     threadStates = {},
     unavailableThreadReasons = {},
+    retryingThreadReasons = {},
     handedOffThreads = [],
     handedOffThreadSet = null,
     handoffSupported = false,
@@ -913,6 +914,7 @@ export class SessionStore extends EventEmitter {
     const live = Boolean(connected && loaded.has(session.id) && subscribed.has(session.id));
     const runtime = threadStates?.[session.id] || null;
     const unavailableReason = clampText(unavailableThreadReasons?.[session.id], 300) || null;
+    const retryingReason = clampText(retryingThreadReasons?.[session.id], 300) || null;
     const handedOff = (handedOffThreadSet || new Set(handedOffThreads)).has(session.id);
     const desktopOwnershipTransfer = session.surface === "Desktop";
     const previous = JSON.stringify(session.control);
@@ -945,6 +947,9 @@ export class SessionStore extends EventEmitter {
           && !["working", "waiting"].includes(session.status)
         );
         session.control.reason = `Live control unavailable: ${unavailableReason}`;
+      } else if (retryingReason) {
+        session.control.mode = "observe";
+        session.control.reason = `Live control is synchronizing: ${retryingReason}`;
       } else if (live && runtime?.status === "active" && runtime.activeTurnId && !waiting && !interruptRequested) {
         session.control.mode = "steer";
         session.control.canSend = true;
@@ -990,6 +995,9 @@ export class SessionStore extends EventEmitter {
       threadStates: state.threadStates && typeof state.threadStates === "object" ? JSON.parse(JSON.stringify(state.threadStates)) : {},
       unavailableThreadReasons: state.unavailableThreadReasons && typeof state.unavailableThreadReasons === "object"
         ? JSON.parse(JSON.stringify(state.unavailableThreadReasons))
+        : {},
+      retryingThreadReasons: state.retryingThreadReasons && typeof state.retryingThreadReasons === "object"
+        ? JSON.parse(JSON.stringify(state.retryingThreadReasons))
         : {},
       handedOffThreads: Array.isArray(state.handedOffThreads) ? [...state.handedOffThreads] : [],
       handoffSupported: Boolean(state.handoffSupported),

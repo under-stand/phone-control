@@ -378,7 +378,7 @@ node ./bin/phone-control.mjs service install \
 | 现象 | 处理方式 |
 | --- | --- |
 | 手机打不开页面 | 运行 `relay doctor` 或检查 `tailscale serve status` |
-| `/api/health` 返回正常但手机仍显示正在恢复 | `ok` 只表示 HTTP 进程存活；等待 `ready: true`，或运行 `doctor` 检查 App Server。安装器也会等待这一就绪状态 |
+| `/api/health` 正常，但状态页显示“实时控制恢复中” | `ready: true` 表示 Phone Control 的 HTTP、Hooks、rollout 追踪和命令队列已可用；`controlReady: false` 只表示 App Server 控制通道正在重连。历史仍可查看，待发送指令会保留并在控制恢复后投递；运行 `doctor` 可检查控制通道 |
 | 页面一直只读 | 运行 `doctor`，确认 Unix Socket 或受管 stdio App Server 可用；若日志出现 `active writer`，完全退出占用该 thread 的 Desktop/CLI 后再恢复，或直接从手机新建任务 |
 | Codex Desktop 显示“已在另外一个应用中打开” | 如果该 Desktop 会话正由手机接管，先等当前任务完成，再在手机会话标题旁点“移交电脑”；手机会保留历史并切成只读。按钮不可用表示它是 CLI 会话、仍有手机任务/问题/审批，或当前使用共享 Unix Socket，不能保证立即释放 |
 | 已移交电脑后怎样由手机拿回来 | 先等电脑端任务完成并完全关闭该会话，再在手机标题旁点“手机接管”。服务会先只读检查再恢复；如果仍提示电脑占用，请完全退出该会话或 Codex Desktop 后重试，失败期间手机保持只读。CLI 会话没有这个按钮，也不需要所有权移交 |
@@ -420,12 +420,14 @@ node ./bin/phone-control.mjs service install \
 ```bash
 npm ci
 npm run verify
+npm run verify:release
 npx playwright install chromium
 npm run test:mobile
 npm run test:browser
 ```
 
-`npm run verify` 会执行源码检查和全部实现测试。真实状态、问题、续聊、审批、SSE 和性能联调脚本
+`npm run verify` 会执行源码检查和全部实现测试。`npm run verify:release` 会在此基础上直接核对当前
+Codex App Server 生成的协议 schema，升级 Codex 或正式发布前必须运行。真实状态、问题、续聊、审批、SSE 和性能联调脚本
 位于 `scripts/`，部分脚本会创建短暂的真实 Codex thread 并消耗少量额度，运行前请先阅读对应源码。
 `npm run test:mobile` 会启动隔离的本地服务并用 Chromium 验证主要手机流程；可通过
 `PHONE_CONTROL_BROWSER` 指定已有浏览器可执行文件。

@@ -53,7 +53,7 @@ codex plugin add plugin-phone-control@phone-control
 
 cd plugins/plugin-phone-control
 npm ci
-npm run verify
+npm run verify:release
 node ./bin/phone-control.mjs service install \
   --runtime "$(command -v node)" \
   --codex-command "$(command -v codex)"
@@ -78,9 +78,13 @@ VPS Relay 和故障处理见[完整使用说明](plugins/plugin-phone-control/RE
 cd plugins/plugin-phone-control
 npm ci
 npm run verify
+npm run verify:release
 npx playwright install chromium
 npm run test:mobile
 npm run test:browser
 ```
+
+`npm run verify:release` 需要本机已安装 Codex；它会基于当前 App Server 生成的 schema 校验
+Phone Control 出站协议，升级 Codex 或正式发布前必须运行。
 
 项目采用 MIT License。参与开发前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。

@@ -165,7 +165,7 @@ class AuditBridge extends EventEmitter {
       serviceTier: serviceTier || "default",
       permissionProfile: permissionProfile || null,
       permissionMode: permissionProfile === "danger-full-access" ? "danger-full-access" : permissionProfile === "read-only" ? "read-only" : permissionProfile ? "workspace-write" : null,
-      approvalPolicy: permissionProfile === "on-request" ? "onRequest" : permissionProfile ? "never" : null,
+      approvalPolicy: permissionProfile === "on-request" ? "on-request" : permissionProfile ? "never" : null,
       status: "delivered",
       delivery: "delivered",
       cwd,

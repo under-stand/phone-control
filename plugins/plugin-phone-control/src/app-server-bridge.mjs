@@ -5,6 +5,7 @@ import path, { dirname } from "node:path";
 import { clampText } from "./utils.mjs";
 import { resolveCodexHome } from "./paths.mjs";
 import { createAppServerTransport } from "./app-server-transport.mjs";
+import { codexPermissionSelection } from "./codex-permissions.mjs";
 import { PHONE_CONTROL_VERSION } from "./version.mjs";
 
 // Match the official remote App Server client's bounded message envelope. The
@@ -14,8 +15,8 @@ const MAX_AUDIT_BYTES = 4 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 5_000;
 const LOADED_THREAD_REFRESH_MS = 2_000;
 const SUBSCRIPTION_RETRY_MIN_MS = 1_000;
+const SUBSCRIPTION_RETRY_MAX_MS = 30_000;
 const SUBSCRIPTION_CONCURRENCY = 4;
-const PERMANENT_SUBSCRIPTION_FAILURE_ATTEMPTS = 3;
 const CODEX_STATUS_CACHE_MS = 30_000;
 const MODEL_CATALOG_CACHE_MS = 5 * 60_000;
 const MAX_PHONE_INPUT_CHARS = 4_000;
@@ -47,14 +48,13 @@ function httpError(message, statusCode) {
   return Object.assign(new Error(message), { statusCode });
 }
 
-function isPermanentSubscriptionError(error) {
-  const message = String(error?.message || "");
-  return error?.code === "ERR_RESUME_HISTORY_INCLUDED"
-    || /no rollout(?: was)? found|rollout (?:does not exist|not found)|thread (?:does not exist|not found)|unknown thread/i.test(message);
-}
-
 function isImmediatePermanentSubscriptionError(error) {
   return error?.code === "ERR_RESUME_HISTORY_INCLUDED";
+}
+
+function subscriptionRetryDelay(attempts, minimumMs) {
+  if (!Number.isFinite(minimumMs) || minimumMs <= 0) return 0;
+  return Math.min(SUBSCRIPTION_RETRY_MAX_MS, minimumMs * (2 ** Math.min(4, Math.max(0, attempts - 1))));
 }
 
 function isOversizedTransportError(error) {
@@ -285,47 +285,6 @@ function normalizeModelSelection(value, label) {
   return normalized;
 }
 
-function permissionSelection(value, cwd, _confirmed = false) {
-  if (value == null || value === "" || value === "default") return null;
-  if (typeof value !== "string") throw httpError("Permission profile is invalid", 400);
-  const profile = value.trim();
-  if (!new Set(["read-only", "workspace-write", "workspace-write-network", "on-request", "danger-full-access"]).has(profile)) {
-    throw httpError("Permission profile is invalid", 400);
-  }
-  // Permission inheritance is intentionally exact. The phone UI displays a
-  // warning for elevated profiles, but the warning is informational and must
-  // not silently change or block the session's existing permission context.
-  if (profile === "read-only") {
-    return {
-      profile,
-      approvalPolicy: "never",
-      sandbox: "readOnly",
-      sandboxPolicy: { type: "readOnly" },
-      permissionMode: "read-only",
-    };
-  }
-  if (profile === "danger-full-access") {
-    return {
-      profile,
-      approvalPolicy: "never",
-      sandbox: "dangerFullAccess",
-      sandboxPolicy: { type: "dangerFullAccess" },
-      permissionMode: "danger-full-access",
-    };
-  }
-  return {
-    profile,
-    approvalPolicy: profile === "on-request" ? "onRequest" : "never",
-    sandbox: "workspaceWrite",
-    sandboxPolicy: {
-      type: "workspaceWrite",
-      writableRoots: cwd ? [cwd] : [],
-      networkAccess: profile === "workspace-write-network",
-    },
-    permissionMode: profile === "workspace-write-network" ? "workspace-write-network" : "workspace-write",
-  };
-}
-
 function normalizeNativeApproval(method, params) {
   if (!params || typeof params !== "object") return null;
   const sessionId = clampText(params.threadId, 200);
@@ -516,13 +475,18 @@ export class CodexAppServerBridge extends EventEmitter {
   status() {
     const unavailableThreads = [];
     const unavailableThreadReasons = {};
+    const retryingThreads = [];
+    const retryingThreadReasons = {};
     let retryingSubscriptions = 0;
     for (const [threadId, failure] of this.subscriptionFailures) {
       if (failure.permanent) {
         unavailableThreads.push(threadId);
         unavailableThreadReasons[threadId] = failure.reason;
+      } else {
+        retryingThreads.push(threadId);
+        retryingThreadReasons[threadId] = failure.reason;
+        retryingSubscriptions += 1;
       }
-      else retryingSubscriptions += 1;
     }
     for (const [threadId, quarantine] of this.quarantinedThreads) {
       if (!unavailableThreads.includes(threadId)) unavailableThreads.push(threadId);
@@ -542,6 +506,8 @@ export class CodexAppServerBridge extends EventEmitter {
       server: this.serverInfo ? { ...this.serverInfo } : null,
       unavailableThreads,
       unavailableThreadReasons,
+      retryingThreads,
+      retryingThreadReasons,
       handedOffThreads: Array.from(this.handedOffThreads.keys()),
       handoffSupported: this.initialized && this.transportKind === "managed-stdio",
       retryingSubscriptions,
@@ -1054,19 +1020,25 @@ export class CodexAppServerBridge extends EventEmitter {
       })
       .catch((error) => {
         const now = Date.now();
-        const permanentCandidate = isPermanentSubscriptionError(error);
-        const candidateAttempts = permanentCandidate ? (previousFailure?.candidateAttempts || 0) + 1 : 0;
-        const permanent = isImmediatePermanentSubscriptionError(error)
-          || (permanentCandidate && candidateAttempts >= PERMANENT_SUBSCRIPTION_FAILURE_ATTEMPTS);
+        const attempts = (previousFailure?.attempts || 0) + 1;
+        // A loaded thread can briefly precede its persisted rollout/index.
+        // Missing-rollout errors are recoverable and must not freeze a valid
+        // CLI session as read-only for the lifetime of this service process.
+        const permanent = isImmediatePermanentSubscriptionError(error);
         const shouldWarn = !previousFailure || now - previousFailure.lastWarningAt >= 30_000;
         if (shouldWarn) {
           this.emit("warning", new Error(`Could not subscribe to live thread ${threadId}: ${error.message}`));
         }
         this.subscriptionFailures.set(threadId, {
           permanent,
-          candidateAttempts,
+          attempts,
           reason: clampText(error.message || "Subscription failed", 300),
-          nextAttemptAt: permanent ? null : now + Math.max(this.loadedThreadRefreshMs, this.subscriptionRetryMinMs),
+          nextAttemptAt: permanent
+            ? null
+            : now + subscriptionRetryDelay(
+              attempts,
+              Math.max(this.loadedThreadRefreshMs, this.subscriptionRetryMinMs),
+            ),
           lastWarningAt: shouldWarn ? now : previousFailure.lastWarningAt,
         });
         return false;
@@ -1329,7 +1301,7 @@ export class CodexAppServerBridge extends EventEmitter {
     if (!this.initialized || !this.transport) throw httpError("Live Codex connection is unavailable", 503);
     const defaults = (await this.codexStatus()).configuration;
     const selection = await this.validateModelSelection(model, reasoningEffort, serviceTier, { fallbackModel: defaults?.model });
-    const permissions = permissionSelection(permissionProfile, workingDirectory, confirmDangerFullAccess);
+    const permissions = codexPermissionSelection(permissionProfile, workingDirectory, confirmDangerFullAccess);
 
     const command = {
       id: commandId,
@@ -1714,7 +1686,7 @@ export class CodexAppServerBridge extends EventEmitter {
       ? await this.validateModelSelection(model, reasoningEffort, serviceTier)
       : { model: null, reasoningEffort: null, serviceTier: null };
     const permissions = action === "start"
-      ? permissionSelection(permissionProfile, workingDirectory, confirmDangerFullAccess)
+      ? codexPermissionSelection(permissionProfile, workingDirectory, confirmDangerFullAccess)
       : null;
 
     const command = {
@@ -2198,4 +2170,9 @@ export class CodexAppServerBridge extends EventEmitter {
   }
 }
 
-export { normalizeQuestions, normalizeAnswers, normalizeNativeApproval, permissionSelection };
+export {
+  normalizeQuestions,
+  normalizeAnswers,
+  normalizeNativeApproval,
+  codexPermissionSelection as permissionSelection,
+};

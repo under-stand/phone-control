@@ -258,6 +258,15 @@ export const tests = [
       assert.equal(cliStore.get("thread-cli").control.canSend, true);
       assert.equal(cliStore.get("thread-cli").control.canHandoff, false);
       assert.equal(cliStore.get("thread-cli").control.canReclaim, false);
+
+      cliStore.setBridgeState({
+        connected: true,
+        retryingThreadReasons: {
+          "thread-cli": "no rollout found for thread thread-cli",
+        },
+      });
+      assert.equal(cliStore.get("thread-cli").control.canSend, false);
+      assert.match(cliStore.get("thread-cli").control.reason, /^Live control is synchronizing:/);
     },
   },
   {

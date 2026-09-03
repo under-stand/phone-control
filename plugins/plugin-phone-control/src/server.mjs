@@ -20,6 +20,7 @@ import { BrowserControlLeaseStore } from "./browser-control-lease.mjs";
 import { BrowserExtensionBroker } from "./browser-extension-broker.mjs";
 import { CompletionPolicy } from "./completion-policy.mjs";
 import { CommandOutbox } from "./command-outbox.mjs";
+import { permissionProfileFromContext } from "./codex-permissions.mjs";
 import { DeviceStore } from "./device-store.mjs";
 import { ImageStore, MAX_IMAGE_BYTES } from "./image-store.mjs";
 import { dataPaths, resolveCodexHome } from "./paths.mjs";
@@ -138,7 +139,10 @@ function sendSse(response, event, payload) {
   response.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
 }
 
-function publicAppServerStatus(status = {}) {
+function publicAppServerStatus(status = {}, visibleThreadIds = null) {
+  const visible = visibleThreadIds instanceof Set ? visibleThreadIds : null;
+  const unavailableThreads = (status.unavailableThreads || []).filter((id) => !visible || visible.has(id));
+  const retryingThreads = (status.retryingThreads || []).filter((id) => !visible || visible.has(id));
   return {
     connected: Boolean(status.connected),
     initialized: Boolean(status.initialized),
@@ -146,8 +150,8 @@ function publicAppServerStatus(status = {}) {
     server: status.server || null,
     loadedThreadCount: status.loadedThreads?.length || 0,
     subscribedThreadCount: status.subscribedThreads?.length || 0,
-    unavailableThreadCount: status.unavailableThreads?.length || 0,
-    retryingSubscriptions: status.retryingSubscriptions || 0,
+    unavailableThreadCount: unavailableThreads.length,
+    retryingSubscriptions: retryingThreads.length,
     pendingQuestions: status.pendingQuestions || 0,
     pendingApprovals: status.pendingApprovals || 0,
     handoffSupported: Boolean(status.handoffSupported),
@@ -172,26 +176,12 @@ function publicHostUrls(port) {
 // Never infer dangerous full-computer access: that profile must be explicitly
 // selected and confirmed for each new turn on the phone.
 function inheritedSessionExecutionContext(session = {}) {
-  const permissionMode = String(session.permissionMode || "").trim().toLowerCase();
-  const approvalPolicy = String(session.approvalPolicy || "").trim().toLowerCase();
-  let permissionProfile = null;
-  if (permissionMode === "read-only" || permissionMode === "readonly") {
-    permissionProfile = "read-only";
-  } else if (permissionMode === "workspace-write-network" || permissionMode === "workspacewritenetwork") {
-    permissionProfile = "workspace-write-network";
-  } else if (permissionMode === "workspace-write" || permissionMode === "workspacewrite") {
-    permissionProfile = /on.?request/.test(approvalPolicy) ? "on-request" : "workspace-write";
-  } else if (permissionMode === "danger-full-access" || permissionMode === "dangerfullaccess") {
-    // Preserve the desktop thread's exact permission profile. The phone UI
-    // asks for explicit confirmation before sending a full-access turn.
-    permissionProfile = "danger-full-access";
-  }
   return {
     cwd: session.cwd || null,
     model: session.model || null,
     reasoningEffort: session.reasoningEffort || null,
     serviceTier: session.serviceTier || null,
-    permissionProfile,
+    permissionProfile: permissionProfileFromContext(session),
   };
 }
 
@@ -301,17 +291,15 @@ export async function createPhoneControlServer({
       subscribedThreads: status.subscribedThreads,
       threadStates: status.threadStates,
       unavailableThreadReasons: status.unavailableThreadReasons,
+      retryingThreadReasons: status.retryingThreadReasons,
       handedOffThreads: status.handedOffThreads,
       handoffSupported: status.handoffSupported,
     });
     bridge.on("status", (status) => {
       syncBridgeState(status);
-      if (!status.connected || !status.initialized) serviceReady = false;
     });
     bridge.on("loaded", () => {
       syncBridgeState();
-      const status = bridge.status();
-      serviceReady = Boolean(status.connected && status.initialized);
     });
     bridge.on("question", (interaction) => {
       store.ingest({
@@ -1081,6 +1069,7 @@ export async function createPhoneControlServer({
           subscribedThreads: [],
           threadStates: {},
           unavailableThreads: [],
+          retryingThreads: [],
           retryingSubscriptions: 0,
           pendingQuestions: 0,
         };
@@ -1118,9 +1107,13 @@ export async function createPhoneControlServer({
           approvalRoutingReason: phoneApprovals.reason,
           nativeApprovalsEnabled: typeof bridge?.decideApproval === "function",
           interactionsEnabled: Boolean(bridge),
+          controlReady: Boolean(rawAppServerStatus.connected && rawAppServerStatus.initialized),
           codex,
           runtime: { ...runtime, phoneControlNode: nodeRuntimeStatus() },
-          appServer: publicAppServerStatus(rawAppServerStatus),
+          appServer: publicAppServerStatus(
+            rawAppServerStatus,
+            new Set(visibleSessions().map((session) => session.id)),
+          ),
         });
         return;
       }
@@ -1796,11 +1789,10 @@ export async function createPhoneControlServer({
     if (scanRollouts) await scanner.start();
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : config.port;
-    if (bridge && !await bridge.start()) {
-      serviceReady = false;
-    } else {
-      serviceReady = true;
-    }
+    if (bridge) await bridge.start();
+    // The HTTP/SSE dashboard, Hooks, rollout tracking, and outbox remain
+    // usable while the optional live-control channel is reconnecting.
+    serviceReady = true;
     completionPolicy.seed(visibleSessions());
     pushReady = true;
     imageCleanupTimer = setInterval(() => void images.cleanup(), 60_000);

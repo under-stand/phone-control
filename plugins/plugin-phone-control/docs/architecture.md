@@ -80,9 +80,10 @@ Phone Control 只主动控制受管 app-server 可以验证的现场 thread，�
 无法证明另一运行时已经释放它。这个边界会牺牲少量“崩溃后立即续聊”的便利，以避免两个客户端
 并发写入同一会话。
 
-`thread/loaded/list` 偶尔会包含无法找到 rollout 的进程内 thread。桥接器先为新建 thread 的落盘
-竞态保留三次短暂重试；持续失败后在当前加载周期标记为不可用并只警告一次。thread 从加载列表
-消失时标记会被清除，之后重新出现会再次验证。
+`thread/loaded/list` 偶尔会先于 rollout 索引暴露进程内 thread。桥接器会以有上限的指数退避持续
+重试该 thread，而不是在三次失败后把一个有效 CLI 会话永久冻结为只读；索引落盘后会自动恢复
+订阅。只有 App Server 明确违反 metadata-only 恢复约束，或单 thread 消息超过安全上限时，才在
+当前加载周期隔离实时控制。追踪、历史与 HTTP 服务就绪状态不依赖这次控制订阅是否已经恢复。
 
 事件日志恢复后，过期或超过现场时效的等待请求会转为不可控制的 `unknown` 状态。实时
 `request_user_input` 本身只存在内存，不会从磁盘伪造可回答表单。
@@ -138,7 +139,9 @@ thread；该 thread 会在当前进程内熔断，其他 thread 在重连后继�
 - 已订阅且 idle：显示 `start`，调用 `turn/start`；
 - 已订阅且 active：只有已知当前 turn id 且没有等待审批/回答时才显示 `steer` 与 `interrupt`；
 - 等待审批或回答：关闭通用输入，显示绑定请求的专用表单；
-- 仍可能被独立 CLI/Desktop 占用、无 rollout、临时 thread、断线或状态不明：只读。
+- 仍可能被独立 CLI/Desktop 占用、断线或状态不明：只读；
+- rollout 索引尚未落盘：显示“控制同步中”并保持追踪，后台自动重试，索引出现后恢复控制；
+- metadata-only 协议不受支持或单 thread 超限：隔离该会话的实时控制，历史查看不受影响。
 
 因此交互能力必须满足以下条件后才能启用：
 
@@ -152,7 +155,9 @@ thread；该 thread 会在当前进程内熔断，其他 thread 在重连后继�
 
 `turn/start` 默认沿用 thread 的 sticky configuration；用户显式选择时只覆盖服务端从 `model/list`
 验证过的 `model`、`effort` 与 `serviceTier`。这些字段按 App Server 协议作用于本轮及后续轮次；
-`turn/steer` 不接受覆盖，因此 active turn 的追加输入不显示运行配置。权限与沙箱不开放覆盖。每次手机输入使用独立 client message id；
+`turn/steer` 不接受覆盖，因此 active turn 的追加输入不显示运行配置。新建 thread 或开始下一轮可以从
+五个受控权限 profile 中选择；`src/codex-permissions.mjs` 是唯一出站映射边界，并把历史 camelCase
+配置归一化为当前 App Server wire enum。发布前使用 Codex 生成的 JSON Schema 做契约检查。每次手机输入使用独立 client message id；
 文本和受控 `localImage` 可以组成同一组 App Server `UserInput`，
 审计不含正文或图片路径。图片只来自设备/session/turn 绑定的短期私有 staging 文件，Codex 接收
 路径后进入不可复用租约，最长保留 15 分钟供异步读取；租约跨 sidecar 重启恢复，过期后删除。

@@ -10,12 +10,15 @@ Codex 的权限边界。
 ```bash
 npm ci
 npm run verify
+npm run verify:release
 npx playwright install chromium
 npm run test:mobile
 npm run test:browser
 ```
 
-`npm run verify` 必须保持通过。涉及页面布局、输入、连接、通知或任务详情的改动，还应运行
+`npm run verify` 必须保持通过。`npm run verify:release` 还会使用当前安装的 Codex 生成 App Server
+JSON Schema，检查 Phone Control 的出站协议枚举是否仍被接受；升级 Codex 或准备发布插件时必须执行。
+它不并入纯源码测试，因为 CI 或贡献者环境不一定安装 Codex。涉及页面布局、输入、连接、通知或任务详情的改动，还应运行
 `npm run test:mobile`。若使用已有 Chromium，可设置 `PHONE_CONTROL_BROWSER`。
 
 ## 提交改动

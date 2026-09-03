@@ -297,7 +297,7 @@ export const tests = [
       try {
         assert.equal(await bridge.start(), true);
         const initialize = harness.sent.find((message) => message.method === "initialize");
-        assert.equal(initialize.params.clientInfo.version, "0.11.0");
+        assert.equal(initialize.params.clientInfo.version, "0.11.2");
         assert.equal(initialize.params.capabilities.experimentalApi, true);
         assert.ok(initialize.params.capabilities.optOutNotificationMethods.includes("item/agentMessage/delta"));
         assert.ok(initialize.params.capabilities.optOutNotificationMethods.includes("item/completed"));
@@ -480,7 +480,7 @@ export const tests = [
         assert.equal(request.params.model, "gpt-choice");
         assert.equal(request.params.effort, "high");
         assert.equal(request.params.serviceTier, "priority");
-        assert.equal(request.params.approvalPolicy, "onRequest");
+        assert.equal(request.params.approvalPolicy, "on-request");
         assert.deepEqual(request.params.sandboxPolicy, { type: "workspaceWrite", writableRoots: [], networkAccess: false });
         assert.equal(command.model, "gpt-choice");
         assert.equal(command.reasoningEffort, "high");
@@ -593,10 +593,10 @@ export const tests = [
           clientMessageId: "phone-permission-profile-0001",
         });
         const threadStart = harness.sent.find((message) => message.method === "thread/start");
-        assert.equal(threadStart.params.approvalPolicy, "onRequest");
+        assert.equal(threadStart.params.approvalPolicy, "on-request");
         assert.equal(threadStart.params.sandbox, "workspaceWrite");
         const turnStart = harness.sent.find((message) => message.method === "turn/start");
-        assert.equal(turnStart.params.approvalPolicy, "onRequest");
+        assert.equal(turnStart.params.approvalPolicy, "on-request");
         assert.deepEqual(turnStart.params.sandboxPolicy, {
           type: "workspaceWrite",
           writableRoots: [workingDirectory],
@@ -604,7 +604,7 @@ export const tests = [
         });
         assert.equal(command.permissionProfile, "on-request");
         assert.equal(command.permissionMode, "workspace-write");
-        assert.equal(command.approvalPolicy, "onRequest");
+        assert.equal(command.approvalPolicy, "on-request");
       } finally {
         await bridge.close();
       }
@@ -950,11 +950,12 @@ export const tests = [
     },
   },
   {
-    name: "allows a creation grace period then stops retrying a permanently missing rollout",
+    name: "keeps a missing rollout retryable and recovers when its index appears",
     async run() {
+      const resumeErrors = { "thread-without-rollout": "no rollout found for thread thread-without-rollout" };
       const harness = transportHarness({
         loadedThreads: ["thread-without-rollout"],
-        resumeErrors: { "thread-without-rollout": "no rollout found for thread thread-without-rollout" },
+        resumeErrors,
       });
       const bridge = new CodexAppServerBridge({
         transportFactory: harness.transportFactory,
@@ -971,10 +972,17 @@ export const tests = [
         await bridge.refreshLoadedThreads();
         await bridge.refreshLoadedThreads();
         const resumes = harness.sent.filter((message) => message.method === "thread/resume");
-        assert.equal(resumes.length, 3);
+        assert.equal(resumes.length, 5);
         assert.equal(warnings.filter((message) => message.includes("Could not subscribe")).length, 1);
-        assert.deepEqual(bridge.status().unavailableThreads, ["thread-without-rollout"]);
+        assert.deepEqual(bridge.status().unavailableThreads, []);
+        assert.deepEqual(bridge.status().retryingThreads, ["thread-without-rollout"]);
+        assert.match(bridge.status().retryingThreadReasons["thread-without-rollout"], /no rollout found/);
+        assert.equal(bridge.status().retryingSubscriptions, 1);
+
+        delete resumeErrors["thread-without-rollout"];
+        await bridge.refreshLoadedThreads();
         assert.equal(bridge.status().retryingSubscriptions, 0);
+        assert.equal(bridge.status().subscribedThreads.includes("thread-without-rollout"), true);
       } finally {
         await bridge.close();
       }
