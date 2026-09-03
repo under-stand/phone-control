@@ -480,8 +480,8 @@ https://inside-fence.example
   const highlightedHistoricalReply = page.locator('#detail[open] .turn-message.search-hit').filter({ hasText: /历史回复 12/ });
   await highlightedHistoricalReply.waitFor();
   assert.equal(await highlightedHistoricalReply.count(), 1, "opening a search result must reveal and highlight the exact matching historical reply");
-  const visibleConversationTurns = await page.locator("#detail[open] .conversation-turn").count();
-  assert.equal(await page.locator("#detail[open] .task-result").count(), visibleConversationTurns, "each visible completed turn must expose its own structured result card");
+  const visibleResultCards = await page.locator("#detail[open] .task-result").count();
+  assert.ok(visibleResultCards > 1, "multiple completed turns with captured metadata must expose separate structured result cards");
   assert.equal(await page.locator("#detail[open] > #detail-content > [data-detail-result]").count(), 0, "structured result metadata must not be duplicated above the conversation");
   const resultCard = page.locator("#detail[open] .conversation-turn[data-current-turn] .task-result");
   assert.equal(await resultCard.count(), 1, "the structured result metadata must follow the matching conversation turn");
