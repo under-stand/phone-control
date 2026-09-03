@@ -1600,12 +1600,14 @@ export async function createPhoneControlServer({
         const id = decodeURIComponent(url.pathname.slice("/api/sessions/".length, -"/task-title/auto".length));
         if (store.hasAutomaticTaskTitle(id)) {
           const summary = store.getSummary(id);
-          json(response, 200, { session: summary, suggestion: { title: summary?.task?.smartTitle || summary?.task?.title || "", cached: true } });
+          const session = summary ? sessionPayload(summary, device.id) : null;
+          json(response, 200, { session, suggestion: { title: summary?.task?.smartTitle || summary?.task?.title || "", cached: true } });
           return;
         }
         const context = store.taskTitleContext(id);
         const suggestion = await titleGenerator.suggest(context);
-        const session = await store.setAutomaticTaskTitle(id, suggestion.title);
+        const summary = await store.setAutomaticTaskTitle(id, suggestion.title);
+        const session = sessionPayload(summary, device.id);
         json(response, 200, { session, suggestion });
         return;
       }
@@ -1617,7 +1619,8 @@ export async function createPhoneControlServer({
         }
         const id = decodeURIComponent(url.pathname.slice("/api/sessions/".length, -"/task-title".length));
         const body = await readJson(request);
-        const session = await store.setTaskTitle(id, body.title ?? null);
+        const summary = await store.setTaskTitle(id, body.title ?? null);
+        const session = sessionPayload(summary, device.id);
         json(response, 200, { session });
         return;
       }
