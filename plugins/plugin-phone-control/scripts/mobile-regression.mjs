@@ -485,11 +485,12 @@ https://inside-fence.example
   const resultCard = page.locator("#detail[open] .conversation-turn[data-current-turn] .task-result");
   assert.equal(await resultCard.count(), 1, "the structured result metadata must follow the matching conversation turn");
   assert.doesNotMatch(await resultCard.innerText(), /历史回复 34/, "the attached result metadata must not repeat the final assistant reply");
-  assert.match(await resultCard.innerText(), /附带信息[\s\S]*已运行验证[\s\S]*npm run verify:release/);
+  assert.match(await resultCard.innerText(), /附带信息[\s\S]*已运行验证/);
   assert.equal(await resultCard.locator(".task-result-message").count(), 0, "the result card must leave the final assistant reply in the conversation turn");
   assert.equal(await resultCard.getAttribute("open"), null, "result metadata should stay collapsed initially for a compact detail view");
   await resultCard.locator(":scope > summary").click();
   assert.equal(await resultCard.getAttribute("open"), "", "result metadata should expand from its summary");
+  assert.match(await resultCard.innerText(), /npm run verify:release/, "expanded result metadata should reveal the verification command");
   await resultCard.locator(":scope > summary").click();
   assert.equal(await resultCard.getAttribute("open"), null, "result metadata should collapse again without losing its content");
   await page.locator("#detail-close").click();
