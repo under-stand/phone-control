@@ -13,9 +13,10 @@
   `scripts/update_plugin_cachebuster.py` 更新唯一 cachebuster；通过 `validate_plugin.py` 后执行
   `codex plugin add plugin-phone-control@personal`，不要手改 marketplace 配置。
 - 正式发布应同步 monorepo 插件目录到 personal 安装镜像，确认服务从稳定安装路径启动，并推送提交和
-  annotated version tag。服务数据、设备记录、配对凭证、Relay token 和 Codex rollout 绝不进入 Git。
+  annotated version tag；已发布 tag 不得移动或覆盖，并应创建对应 GitHub Release。服务数据、设备记录、
+  配对凭证、Relay token 和 Codex rollout 绝不进入 Git。
 
-当前已发布版本：`0.11.2`，公开提交和标签以 GitHub `under-stand/phone-control` 为准。
+当前已发布版本：`0.12.0`，公开提交和标签以 GitHub `under-stand/phone-control` 为准。
 
 ## 协议与所有权边界
 
