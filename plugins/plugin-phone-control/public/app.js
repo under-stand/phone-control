@@ -9,10 +9,11 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=88";
-import { assistantReplyGroups, conversationTurns, mapResultsToTurns } from "./lib/conversation.js?v=88";
-import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=88";
-import { createSessionSnapshot, parseSessionSnapshot } from "./lib/session-snapshot.js?v=88";
+} from "./lib/format.js?v=89";
+import { assistantReplyGroups, conversationTurns, mapResultsToTurns } from "./lib/conversation.js?v=89";
+import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=89";
+import { createSessionSnapshot, parseSessionSnapshot } from "./lib/session-snapshot.js?v=89";
+import { createConnectionState, isStreamHealthy as isConnectionStreamHealthy, reduceConnectionState } from "./lib/connection-state.js?v=89";
 
 function storedCompletionKeys() {
   try {
@@ -96,6 +97,7 @@ const state = {
   offlineProbeTimer: null,
   lastStreamEventAt: 0,
   connectionGraceTimer: null,
+  connectionState: createConnectionState(),
   connected: false,
   lastSyncAt: 0,
   backgroundedAt: 0,
@@ -264,6 +266,20 @@ const STREAM_STALE_MS = 36_000;
 const STREAM_WATCHDOG_MS = 8_000;
 const CONNECTION_TRANSIENT_GRACE_MS = 12_000;
 const CONNECTION_HTTP_FRESH_MS = 20_000;
+
+function applyConnectionEvent(event, options = {}) {
+  state.connectionState = reduceConnectionState(state.connectionState, event, {
+    now: options.now || Date.now(),
+    httpFreshMs: CONNECTION_HTTP_FRESH_MS,
+  });
+  state.lastStreamEventAt = state.connectionState.lastStreamEventAt;
+  state.lastSyncAt = state.connectionState.lastSyncAt;
+  state.connected = state.connectionState.phase === "online"
+    && state.connectionState.transport === "sse";
+  if (event.type === "background") state.backgroundedAt = state.connectionState.backgroundedAt;
+  if (event.type === "foreground") state.backgroundedAt = 0;
+  return state.connectionState;
+}
 
 function isUserTask(session) {
   return session.taskKind ? session.taskKind === "user" : !session.hiddenFromTasks;
@@ -750,6 +766,11 @@ function persistDraftsSoon() {
 }
 
 function updateConnection(value, label) {
+  applyConnectionEvent({
+    type: "view",
+    phase: value,
+    transport: value === "online" ? "sse" : value === "synced" ? "http" : ["paused", "offline"].includes(value) ? "none" : undefined,
+  });
   const compactLabels = {
     online: "已连接",
     synced: "已同步",
@@ -1195,10 +1216,11 @@ async function refreshSessions({ notifyError = false, force = false } = {}) {
       // started is newer than its response. Do not let the slower full-list
       // request temporarily remove and then re-add cards under the user's tap.
       if (mutationRevision === state.sessionsMutationRevision) replaceSessions(payload.sessions || []);
-      state.lastSyncAt = Date.now();
+      applyConnectionEvent({ type: "http_sync_ok" });
       return true;
     } catch (error) {
       if (error.message !== "UNAUTHORIZED" && notifyError) toast(error.message);
+      applyConnectionEvent({ type: "http_sync_error", error: error.message });
       return false;
     } finally {
       if (refreshId === state.sessionsRefreshId) state.sessionsRefreshPromise = null;
@@ -1311,7 +1333,7 @@ function streamEventAge() {
 }
 
 function hasHealthyStream(maxAgeMs = STREAM_STALE_MS) {
-  return Boolean(state.connected && state.stream && streamEventAge() <= maxAgeMs);
+  return Boolean(state.stream && isConnectionStreamHealthy(state.connectionState, { maxAgeMs }));
 }
 
 function showConnectionRecovery() {
@@ -1324,9 +1346,7 @@ function showConnectionRecovery() {
 }
 
 function markStreamAlive() {
-  const now = Date.now();
-  state.lastStreamEventAt = now;
-  state.lastSyncAt = now;
+  applyConnectionEvent({ type: "stream_activity" });
   updateSyncSummary();
 }
 
@@ -1337,7 +1357,7 @@ function startStreamWatchdog(generation) {
     if (Date.now() - state.lastStreamEventAt <= STREAM_STALE_MS) return;
     state.stream.close();
     state.stream = null;
-    state.connected = false;
+    applyConnectionEvent({ type: "stream_stale", error: "stream heartbeat expired" });
     showConnectionRecovery();
     void resumeForeground();
   }, STREAM_WATCHDOG_MS);
@@ -1363,7 +1383,7 @@ function scheduleFallbackRefresh(delayMs = state.streamFallbackDelayMs) {
 
 function handleStreamError(generation) {
   if (generation !== state.streamGeneration) return;
-  state.connected = false;
+  applyConnectionEvent({ type: "stream_error", error: "stream error" });
   clearTimeout(state.connectionGraceTimer);
   if (document.visibilityState !== "hidden") showConnectionRecovery();
   const graceDelay = Math.max(1_200, CONNECTION_TRANSIENT_GRACE_MS - streamEventAge());
@@ -1377,7 +1397,7 @@ function handleStreamError(generation) {
 function connectStream() {
   state.stream?.close();
   clearConnectionTimers();
-  state.connected = false;
+  applyConnectionEvent({ type: "connect_start" });
   const generation = ++state.streamGeneration;
   let snapshotSettled = false;
   let settleSnapshot;
@@ -1388,7 +1408,6 @@ function connectStream() {
     settleSnapshot(ready);
   };
   const connection = { generation, snapshotReady };
-  state.lastStreamEventAt = Date.now();
   if (!state.lastSyncAt || Date.now() - state.lastSyncAt > 10_000) updateConnection("connecting", state.backgroundedAt ? "恢复现场" : "连接中");
   const stream = new EventSource("/api/events");
   state.stream = stream;
@@ -1397,16 +1416,16 @@ function connectStream() {
     if (generation !== state.streamGeneration) return;
     clearConnectionTimers();
     state.streamFallbackDelayMs = 1_000;
+    applyConnectionEvent({ type: "stream_open" });
     markStreamAlive();
     startStreamWatchdog(generation);
     if (!["online", "synced"].includes(elements.connection.dataset.state)) updateConnection("connecting", "同步会话");
   });
   stream.addEventListener("snapshot", (event) => {
     if (generation !== state.streamGeneration) return;
-    markStreamAlive();
     const payload = JSON.parse(event.data);
+    applyConnectionEvent({ type: "stream_snapshot" });
     replaceSessions(payload.sessions || []);
-    state.connected = true;
     updateConnection("online", "实时连接");
     finishSnapshot(true);
   });
@@ -1469,7 +1488,7 @@ function connectStream() {
 }
 
 function pauseForBackground() {
-  state.backgroundedAt = Date.now();
+  applyConnectionEvent({ type: "background" });
   state.foregroundResumeId += 1;
   state.foregroundResumePromise = null;
   state.sessionsRefreshId += 1;
@@ -1477,7 +1496,6 @@ function pauseForBackground() {
   persistDraftsNow();
   state.stream?.close();
   state.stream = null;
-  state.connected = false;
   state.streamGeneration += 1;
   clearConnectionTimers();
   updateConnection("paused", "后台暂停");
@@ -1535,7 +1553,7 @@ function resumeForeground({ notifyError = false, force = false } = {}) {
       updateConnection("connecting", "继续重试");
       scheduleFallbackRefresh(500);
     }
-    state.backgroundedAt = 0;
+    applyConnectionEvent({ type: "foreground" });
     return ready;
   })();
   state.foregroundResumePromise = promise.finally(() => {
