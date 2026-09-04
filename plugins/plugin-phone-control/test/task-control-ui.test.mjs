@@ -25,7 +25,19 @@ export const tests = [
       assert.match(app, /function commandStateMarkup/);
       assert.match(styles, /\.task-result \{/);
       assert.match(styles, /\.command-lifecycle \{/);
-      assert.match(worker, /task-view\.js\?v=90/);
+      assert.match(worker, /task-view\.js\?v=91/);
+
+      // Detail cards render only after a session is opened. Keep this
+      // declaration-order check here so a browser-only temporal-dead-zone
+      // regression cannot pass the release gate again.
+      const turnStart = app.indexOf("function conversationTurn(");
+      const turnEnd = app.indexOf("\nfunction conversation(", turnStart);
+      assert.ok(turnStart >= 0 && turnEnd > turnStart, "conversationTurn renderer must remain discoverable");
+      const turnSource = app.slice(turnStart, turnEnd);
+      const statusDeclaration = turnSource.indexOf("const status = conversationTurnStatus");
+      const statusVisibility = turnSource.indexOf("const showStatus =");
+      assert.ok(statusDeclaration >= 0, "conversationTurn must compute status");
+      assert.ok(statusVisibility > statusDeclaration, "conversationTurn must compute status before reading it");
     },
   },
 ];

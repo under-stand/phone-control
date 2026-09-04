@@ -9,11 +9,11 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=90";
-import { assistantReplyGroups, conversationTurnStatus, conversationTurns, mapResultsToTurns } from "./lib/conversation.js?v=90";
-import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=90";
-import { createSessionSnapshot, parseSessionSnapshot } from "./lib/session-snapshot.js?v=90";
-import { createConnectionState, isStreamHealthy as isConnectionStreamHealthy, reduceConnectionState } from "./lib/connection-state.js?v=90";
+} from "./lib/format.js?v=91";
+import { assistantReplyGroups, conversationTurnStatus, conversationTurns, mapResultsToTurns } from "./lib/conversation.js?v=91";
+import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=91";
+import { createSessionSnapshot, parseSessionSnapshot } from "./lib/session-snapshot.js?v=91";
+import { createConnectionState, isStreamHealthy as isConnectionStreamHealthy, reduceConnectionState } from "./lib/connection-state.js?v=91";
 
 function storedCompletionKeys() {
   try {
@@ -1983,12 +1983,12 @@ function conversationTurn(turn, { sessionId, session, resultByTurn = null, fallb
   const model = turn.model || null;
   const effort = turn.reasoningEffort || null;
   const modelMeta = [model, effort ? `推理 ${modelEffortLabel(effort)}` : null, isFastServiceTier(turn.serviceTier) ? "Fast" : null].filter(Boolean).join(" · ");
-  const showStatus = current || !["idle", "completed"].includes(status);
   const expansionKey = turnExpansionKey(sessionId, turn.id);
   const updatesOpen = state.expandedTurnUpdates.has(expansionKey);
   const result = resultByTurn?.get(String(turn.id))
     || (fallbackResultTurnId && String(fallbackResultTurnId) === String(turn.id) ? fallbackResult : null);
   const status = conversationTurnStatus(turn, { result, historical: !current });
+  const showStatus = current || !["idle", "completed"].includes(status);
   const turnResult = result && session
     ? taskResultMarkup(session, result)
     : "";
