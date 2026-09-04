@@ -426,13 +426,13 @@ export const tests = [
         const page = await request({ port: started.port, pathname: "/" });
         assert.equal(page.status, 200);
         assert.match(page.headers["content-security-policy"], /default-src 'self'/);
-        assert.match(page.body, /app\.js\?v=86/);
+        assert.match(page.body, /app\.js\?v=87/);
         assert.match(page.body, /id="task-title">任务</);
         assert.doesNotMatch(page.body, /id="metrics"|任务概览|会话列表/);
 
         const compressedAsset = await request({
           port: started.port,
-          pathname: "/app.js?v=86",
+          pathname: "/app.js?v=87",
           headers: { "accept-encoding": "gzip" },
         });
         assert.equal(compressedAsset.status, 200);

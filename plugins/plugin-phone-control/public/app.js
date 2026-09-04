@@ -9,9 +9,10 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=86";
-import { assistantReplyGroups, conversationTurns, mapResultsToTurns } from "./lib/conversation.js?v=86";
-import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=86";
+} from "./lib/format.js?v=87";
+import { assistantReplyGroups, conversationTurns, mapResultsToTurns } from "./lib/conversation.js?v=87";
+import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=87";
+import { createSessionSnapshot, parseSessionSnapshot } from "./lib/session-snapshot.js?v=87";
 
 function storedCompletionKeys() {
   try {
@@ -29,6 +30,40 @@ function storedDrafts() {
   } catch {
     return new Map();
   }
+}
+
+const SESSION_SNAPSHOT_STORAGE_KEY = "phone-control-session-snapshot-v1";
+const SESSION_SNAPSHOT_PERSIST_DELAY_MS = 350;
+
+function hydrateSessionSnapshot() {
+  try {
+    const parsed = parseSessionSnapshot(localStorage.getItem(SESSION_SNAPSHOT_STORAGE_KEY));
+    if (!parsed?.sessions.length) return false;
+    state.sessions = new Map(parsed.sessions.map((session) => [session.id, session]));
+    state.snapshotHydratedAt = Date.parse(parsed.savedAt) || 0;
+    state.snapshotStale = parsed.stale;
+    state.sessionsMutationRevision += 1;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function persistSessionSnapshotNow() {
+  clearTimeout(state.sessionSnapshotPersistTimer);
+  state.sessionSnapshotPersistTimer = null;
+  try {
+    const snapshot = createSessionSnapshot(Array.from(state.sessions.values()));
+    localStorage.setItem(SESSION_SNAPSHOT_STORAGE_KEY, JSON.stringify(snapshot));
+  } catch {
+    // The live stream remains the source of truth when browser storage is full
+    // or unavailable (for example in private browsing mode).
+  }
+}
+
+function persistSessionSnapshotSoon() {
+  clearTimeout(state.sessionSnapshotPersistTimer);
+  state.sessionSnapshotPersistTimer = setTimeout(() => persistSessionSnapshotNow(), SESSION_SNAPSHOT_PERSIST_DELAY_MS);
 }
 
 const TARGET_SESSION_STORAGE_KEY = "phone-control-target-session-v1";
@@ -85,6 +120,9 @@ const state = {
   automaticTitleRetryAt: new Map(),
   automaticTitleQueue: [],
   automaticTitleActive: false,
+  sessionSnapshotPersistTimer: null,
+  snapshotHydratedAt: 0,
+  snapshotStale: false,
   richTextCache: new Map(),
   historyVisibleTurns: new Map(),
   detailSessions: new Map(),
@@ -480,6 +518,10 @@ function taskCard(session) {
 }
 
 function queueAutomaticTaskTitles(sessions) {
+  // Do not spend a Codex request on a browser-only cache before the first
+  // network snapshot arrives. Once either SSE or HTTP has synced, naming can
+  // proceed normally for the visible page.
+  if (!state.connected && !state.lastSyncAt) return;
   for (const session of sessions.slice(0, 12)) {
     if (!isUserTask(session) || session.task?.customTitle || session.task?.smartTitle) continue;
     if (state.automaticTitleRequested.has(session.id) || state.automaticTitleQueue.includes(session.id)) continue;
@@ -508,6 +550,7 @@ async function processAutomaticTaskTitles() {
         if (!summary) continue;
         state.sessions.set(sessionId, summary);
         state.automaticTitleRetryAt.delete(sessionId);
+        persistSessionSnapshotSoon();
         state.sessionsMutationRevision += 1;
         const detail = state.detailSessions.get(sessionId);
         if (detail) state.detailSessions.set(sessionId, { ...detail, ...summary, events: detail.events });
@@ -731,7 +774,11 @@ function updateSyncSummary() {
   const waiting = tasks.filter((session) => session.status === "waiting" && session.liveness === "recent").length;
   const today = new Date().toISOString().slice(0, 10);
   const done = tasks.filter((session) => ["idle", "completed"].includes(session.status) && session.updatedAt.startsWith(today)).length;
-  const freshness = state.lastSyncAt ? `${relativeTime(state.lastSyncAt)}同步` : "正在同步";
+  const freshness = state.lastSyncAt
+    ? `${relativeTime(state.lastSyncAt)}同步`
+    : state.snapshotHydratedAt
+      ? state.snapshotStale ? "显示缓存，正在同步" : "显示缓存"
+      : "正在同步";
   const summary = [];
   if (waiting) summary.push(`${waiting} 项等你处理`);
   if (working) summary.push(`${working} 个执行中`);
@@ -1099,7 +1146,9 @@ async function loadModelCatalog({ force = false } = {}) {
 
 function replaceSessions(sessions) {
   state.sessions = new Map(sessions.map((session) => [session.id, session]));
+  state.snapshotStale = false;
   state.sessionsMutationRevision += 1;
+  persistSessionSnapshotSoon();
   if (state.searchQuery) queueTaskSearch(350);
   scheduleRender();
 }
@@ -1114,6 +1163,7 @@ function forgetSession(id) {
     state.detailRequestControllers.delete(key);
   }
   state.sessions.delete(id);
+  persistSessionSnapshotSoon();
   state.searchResults.delete(id);
   state.sessionsMutationRevision += 1;
   state.detailSessions.delete(id);
@@ -1370,6 +1420,7 @@ function connectStream() {
     const session = JSON.parse(event.data);
     const previous = state.sessions.get(session.id);
     state.sessions.set(session.id, session);
+    persistSessionSnapshotSoon();
     state.sessionsMutationRevision += 1;
     if (state.searchQuery) queueTaskSearch(650);
     state.detailFetchedAt.delete(session.id);
@@ -1391,6 +1442,7 @@ function connectStream() {
     current.sort((left, right) => String(left.createdAt || "").localeCompare(String(right.createdAt || "")));
     const updated = { ...session, queuedCommands: current };
     state.sessions.set(session.id, updated);
+    persistSessionSnapshotSoon();
     if (state.detailSessions.has(session.id)) state.detailSessions.set(session.id, { ...state.detailSessions.get(session.id), queuedCommands: current });
     state.sessionsMutationRevision += 1;
     scheduleRender();
@@ -4195,6 +4247,7 @@ window.addEventListener("offline", () => {
 });
 window.addEventListener("pagehide", persistDraftsNow);
 if (state.soundEnabled) document.addEventListener("pointerdown", () => void unlockSignalSound(), { once: true });
+if (hydrateSessionSnapshot()) scheduleRender({ force: true });
 updateNotifyButton();
 syncVisualViewport();
 bootstrap();

@@ -1775,7 +1775,7 @@ export async function createPhoneControlServer({
       try {
         const body = await readFile(target);
         const encoded = encodedPayload(response, body);
-        const versionedAssets = ["/app.js", "/styles.css", "/browser.js", "/browser.css", "/lib/browser-frame-controls.js"];
+        const versionedAssets = ["/app.js", "/styles.css", "/browser.js", "/browser.css", "/lib/browser-frame-controls.js", "/lib/session-snapshot.js"];
         const versioned = url.searchParams.has("v") && versionedAssets.includes(url.pathname);
         const revalidate = ["/", "/browser.html", "/sw.js"].includes(url.pathname) || !versioned && versionedAssets.includes(url.pathname);
         response.writeHead(200, {
