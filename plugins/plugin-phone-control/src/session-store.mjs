@@ -146,6 +146,7 @@ function publicEvent(event) {
   if (event.phase) copy.phase = event.phase;
   if (event.source === "hook" || event.source === "rollout") copy.origin = event.source;
   if (event.tool?.name) copy.tool = { name: event.tool.name };
+  if (event.kind === "phone_input_sent" && event.action) copy.action = event.action;
   if (event.message?.text) {
     copy.message = {
       role: event.message.role || "system",

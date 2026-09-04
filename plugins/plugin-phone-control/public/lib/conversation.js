@@ -14,6 +14,44 @@ function turnClosed(turn) {
   return turn?.events.some((event) => ["turn_complete", "session_end", "error", "aborted"].includes(event.kind));
 }
 
+export function conversationTurnStatus(turn, { result = null, historical = false } = {}) {
+  let status = "working";
+  let terminal = false;
+  for (const event of turn?.events || []) {
+    if (["turn_complete", "session_end", "error", "aborted"].includes(event.kind)) {
+      status = event.kind === "turn_complete" ? "idle"
+        : event.kind === "session_end" ? "completed"
+          : event.kind;
+      terminal = true;
+      continue;
+    }
+    // Delayed Hook/rollout activity after a terminal event must not make an
+    // earlier card look like it is still running.
+    if (terminal) continue;
+    if (["permission_request", "question"].includes(event.kind)) status = "waiting";
+    else if (["turn_start", "working", "activity", "tool_start"].includes(event.kind)) status = "working";
+  }
+  // Completed-turn metadata survives the rolling event window. When the
+  // terminal event itself has already been evicted, use that metadata to keep
+  // an older card from looking active. The result is deliberately consulted
+  // only for a matching rendered turn (the caller binds it by turn/event id).
+  if (!terminal && result?.status) {
+    const resultStatus = { completed: "idle", stopped: "aborted", failed: "error" }[result.status];
+    if (resultStatus) status = resultStatus;
+  }
+  // A session can retain a small tail of activity for an older turn after its
+  // completion row has left the rolling window. Only the newest rendered turn
+  // may be considered live without explicit waiting/error evidence.
+  if (historical && !terminal && status === "working") status = "idle";
+  return status;
+}
+
+function startsFallbackTurn(event, current) {
+  if (!current || !turnClosed(current)) return false;
+  return event?.kind === "turn_start"
+    || (event?.kind === "phone_input_sent" && event.action === "start");
+}
+
 const TERMINAL_KINDS = new Set(["turn_complete", "session_end", "error", "aborted"]);
 
 function sameTimestamp(left, right) {
@@ -89,6 +127,10 @@ export function conversationTurns(events = []) {
         fallback += 1;
         key = `prompt-${event.eventId || fallback}`;
       }
+    }
+    if (!key && startsFallbackTurn(event, current)) {
+      fallback += 1;
+      key = `turn-${event.eventId || fallback}`;
     }
     if (!key) {
       fallback += 1;

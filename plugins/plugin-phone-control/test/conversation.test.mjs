@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { assistantReplyGroups, conversationTurns, mapResultsToTurns } from "../public/lib/conversation.js";
+import { assistantReplyGroups, conversationTurnStatus, conversationTurns, mapResultsToTurns } from "../public/lib/conversation.js";
 
 function prompt(eventId, at, { origin, turnId = null, text = "修复当前轮次重复问题" } = {}) {
   return {
@@ -63,6 +63,43 @@ export const tests = [
       ]);
       assert.equal(turns.length, 2);
       assert.equal(turns.every((turn) => turn.userMessages.length === 1), true);
+    },
+  },
+  {
+    name: "starts a new fallback turn after an unlabelled turn boundary",
+    run() {
+      const turns = conversationTurns([
+        prompt("old-prompt", "2026-08-28T15:42:40.000Z", { text: "第一轮任务" }),
+        { eventId: "old-done", at: "2026-08-28T15:42:41.000Z", kind: "turn_complete" },
+        { eventId: "new-start", at: "2026-08-28T15:42:42.000Z", kind: "turn_start" },
+        prompt("new-prompt", "2026-08-28T15:42:43.000Z", { text: "第二轮任务" }),
+      ]);
+      assert.equal(turns.length, 2);
+      assert.equal(turns[0].userMessages[0].message, "第二轮任务");
+      assert.equal(turns[0].events.some((event) => event.kind === "turn_start"), true);
+      assert.equal(turns[1].userMessages[0].message, "第一轮任务");
+    },
+  },
+  {
+    name: "keeps a completed turn finished when delayed activity follows it",
+    run() {
+      const [turn] = conversationTurns([
+        prompt("prompt", "2026-08-28T15:42:40.000Z", { turnId: "turn-done", text: "完成一个任务" }),
+        { eventId: "done", at: "2026-08-28T15:42:41.000Z", kind: "turn_complete", turnId: "turn-done" },
+        { eventId: "late-working", at: "2026-08-28T15:42:42.000Z", kind: "working", turnId: "turn-done" },
+      ]);
+      assert.equal(conversationTurnStatus(turn), "idle");
+    },
+  },
+  {
+    name: "uses retained result metadata when an older terminal event was evicted",
+    run() {
+      const [turn] = conversationTurns([
+        prompt("prompt", "2026-08-28T15:42:40.000Z", { turnId: "turn-retained", text: "完成一个较早任务" }),
+        { eventId: "late-tool", at: "2026-08-28T15:42:42.000Z", kind: "tool_end", turnId: "turn-retained" },
+      ]);
+      assert.equal(conversationTurnStatus(turn, { result: { status: "completed" }, historical: true }), "idle");
+      assert.equal(conversationTurnStatus(turn, { historical: true }), "idle");
     },
   },
   {

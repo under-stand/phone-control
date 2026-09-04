@@ -9,11 +9,11 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=89";
-import { assistantReplyGroups, conversationTurns, mapResultsToTurns } from "./lib/conversation.js?v=89";
-import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=89";
-import { createSessionSnapshot, parseSessionSnapshot } from "./lib/session-snapshot.js?v=89";
-import { createConnectionState, isStreamHealthy as isConnectionStreamHealthy, reduceConnectionState } from "./lib/connection-state.js?v=89";
+} from "./lib/format.js?v=90";
+import { assistantReplyGroups, conversationTurnStatus, conversationTurns, mapResultsToTurns } from "./lib/conversation.js?v=90";
+import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=90";
+import { createSessionSnapshot, parseSessionSnapshot } from "./lib/session-snapshot.js?v=90";
+import { createConnectionState, isStreamHealthy as isConnectionStreamHealthy, reduceConnectionState } from "./lib/connection-state.js?v=90";
 
 function storedCompletionKeys() {
   try {
@@ -521,8 +521,8 @@ function taskCard(session) {
         <div><h3>${highlightedSearchText(taskTitle(session))}</h3><p>${escapeHtml(projectName(session))}${escapeHtml(machine)}</p></div>
         <span class="status-badge">${labels[displayStatus] || labels.unknown}</span>
       </div>
-      ${topic ? `<p class="task-topic"><span title="长期会话主题">主题</span><b>${highlightedSearchText(topic)}</b></p>` : ""}
-      ${showGoal ? `<p class="task-message">${highlightedSearchText(goal)}</p>` : ""}
+      ${topic ? `<p class="task-topic"><span title="长期会话主题">会话主题</span><b>${highlightedSearchText(topic)}</b></p>` : ""}
+      ${showGoal ? `<p class="task-message"><span title="最新的有效任务指令（不含继续、确认等上下文回复）">当前指令</span><b>${highlightedSearchText(goal)}</b></p>` : ""}
       <p class="task-progress-line"><span>${displayStatus === "disconnected" ? "状态" : isAttentionTask(session) ? "待你" : ["idle", "completed"].includes(session.status) ? "结果" : "进展"}</span><b>${highlightedSearchText(progress)}</b></p>
       ${match?.snippet ? `<p class="task-match"><span>匹配</span><b>${highlightedSearchText(match.snippet)}</b></p>` : ""}
       ${waiting}${liveness}
@@ -1944,19 +1944,6 @@ function timelineItem(event) {
   </li>`;
 }
 
-function conversationTurnStatus(turn) {
-  let status = "working";
-  for (const event of turn.events) {
-    if (["permission_request", "question"].includes(event.kind)) status = "waiting";
-    else if (event.kind === "turn_complete") status = "idle";
-    else if (event.kind === "session_end") status = "completed";
-    else if (event.kind === "error") status = "error";
-    else if (event.kind === "aborted") status = "aborted";
-    else if (["turn_start", "working", "activity", "tool_start"].includes(event.kind)) status = "working";
-  }
-  return status;
-}
-
 function conversationMessage(event, role) {
   const display = { id: event.id, kind: role === "assistant" ? "assistant_message" : "user_prompt", message: event.message };
   const copyButton = role === "assistant" ? `<button class="message-copy" type="button" data-copy-message="${escapeHtml(event.id)}" aria-label="复制这条 Codex 回复">复制</button>` : "";
@@ -1992,7 +1979,6 @@ function turnProcess(turn, sessionId) {
 }
 
 function conversationTurn(turn, { sessionId, session, resultByTurn = null, fallbackResult = null, fallbackResultTurnId = null, label = "对话轮次", older = false, current = false } = {}) {
-  const status = conversationTurnStatus(turn);
   const { finalReply, updates } = assistantReplyGroups(turn);
   const model = turn.model || null;
   const effort = turn.reasoningEffort || null;
@@ -2002,6 +1988,7 @@ function conversationTurn(turn, { sessionId, session, resultByTurn = null, fallb
   const updatesOpen = state.expandedTurnUpdates.has(expansionKey);
   const result = resultByTurn?.get(String(turn.id))
     || (fallbackResultTurnId && String(fallbackResultTurnId) === String(turn.id) ? fallbackResult : null);
+  const status = conversationTurnStatus(turn, { result, historical: !current });
   const turnResult = result && session
     ? taskResultMarkup(session, result)
     : "";

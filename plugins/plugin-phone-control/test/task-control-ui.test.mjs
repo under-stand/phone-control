@@ -20,10 +20,12 @@ export const tests = [
       assert.match(app, /data-task-result/);
       assert.match(app, /expandedResults/);
       assert.match(app, /turnResult/);
+      assert.match(app, /当前指令/);
+      assert.match(app, /会话主题/);
       assert.match(app, /function commandStateMarkup/);
       assert.match(styles, /\.task-result \{/);
       assert.match(styles, /\.command-lifecycle \{/);
-      assert.match(worker, /task-view\.js\?v=89/);
+      assert.match(worker, /task-view\.js\?v=90/);
     },
   },
 ];

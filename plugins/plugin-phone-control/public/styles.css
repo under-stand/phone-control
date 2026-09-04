@@ -157,7 +157,9 @@ button { color: inherit; }
 [data-status="waiting"] .status-badge, .status-badge[data-status="waiting"] { background: rgba(255,107,74,.12); color: #bf4226; }
 [data-status="completed"] .status-badge, [data-status="idle"] .status-badge { background: rgba(35,133,101,.1); color: var(--green); }
 [data-status="disconnected"] .status-badge { background: rgba(165,107,25,.11); color: #8b5a16; }
-.task-message { display: -webkit-box; overflow: hidden; margin: 13px 0 0; color: #4e4b46; font-size: 13px; line-height: 1.5; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.task-message { display: flex; min-width: 0; gap: 8px; align-items: baseline; margin: 13px 0 0; color: #4e4b46; font-size: 13px; line-height: 1.5; }
+.task-message span { flex: 0 0 auto; color: var(--violet); font-size: 9px; font-weight: 850; letter-spacing: .08em; }
+.task-message b { display: -webkit-box; overflow: hidden; min-width: 0; font-weight: 600; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .task-topic, .task-progress-line, .task-match { display: flex; min-width: 0; gap: 8px; align-items: baseline; margin: 10px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .task-topic { margin-top: 8px; }
 .task-topic span, .task-progress-line span, .task-match span { flex: 0 0 auto; color: var(--violet); font-size: 9px; font-weight: 850; letter-spacing: .08em; }
