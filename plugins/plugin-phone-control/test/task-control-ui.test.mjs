@@ -23,7 +23,7 @@ export const tests = [
       assert.match(app, /function commandStateMarkup/);
       assert.match(styles, /\.task-result \{/);
       assert.match(styles, /\.command-lifecycle \{/);
-      assert.match(worker, /task-view\.js\?v=85/);
+      assert.match(worker, /task-view\.js\?v=86/);
     },
   },
 ];

@@ -9,9 +9,9 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=85";
-import { assistantReplyGroups, conversationTurns, mapResultsToTurns } from "./lib/conversation.js?v=85";
-import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=85";
+} from "./lib/format.js?v=86";
+import { assistantReplyGroups, conversationTurns, mapResultsToTurns } from "./lib/conversation.js?v=86";
+import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=86";
 
 function storedCompletionKeys() {
   try {
@@ -82,6 +82,7 @@ const state = {
   expandedTurnUpdates: new Set(),
   expandedResults: new Set(),
   automaticTitleRequested: new Set(),
+  automaticTitleRetryAt: new Map(),
   automaticTitleQueue: [],
   automaticTitleActive: false,
   richTextCache: new Map(),
@@ -482,6 +483,10 @@ function queueAutomaticTaskTitles(sessions) {
   for (const session of sessions.slice(0, 12)) {
     if (!isUserTask(session) || session.task?.customTitle || session.task?.smartTitle) continue;
     if (state.automaticTitleRequested.has(session.id) || state.automaticTitleQueue.includes(session.id)) continue;
+    // Smart naming is a progressive enhancement. A temporary Codex/network
+    // failure must not permanently blacklist a session, but also should not
+    // make every render hammer the title endpoint.
+    if ((state.automaticTitleRetryAt.get(session.id) || 0) > Date.now()) continue;
     state.automaticTitleRequested.add(session.id);
     state.automaticTitleQueue.push(session.id);
   }
@@ -502,6 +507,7 @@ async function processAutomaticTaskTitles() {
         const summary = payload.session;
         if (!summary) continue;
         state.sessions.set(sessionId, summary);
+        state.automaticTitleRetryAt.delete(sessionId);
         state.sessionsMutationRevision += 1;
         const detail = state.detailSessions.get(sessionId);
         if (detail) state.detailSessions.set(sessionId, { ...detail, ...summary, events: detail.events });
@@ -511,6 +517,10 @@ async function processAutomaticTaskTitles() {
       } catch {
         // Naming is progressive enhancement. Keep the deterministic title when
         // Codex is busy, offline, or has no usable task prompt.
+        // Allow a later render (for example after reconnect or a filter change)
+        // to retry instead of treating this transient failure as permanent.
+        state.automaticTitleRequested.delete(sessionId);
+        state.automaticTitleRetryAt.set(sessionId, Date.now() + 30_000);
       }
     }
   } finally {
