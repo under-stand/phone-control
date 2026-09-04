@@ -9,10 +9,10 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=87";
-import { assistantReplyGroups, conversationTurns, mapResultsToTurns } from "./lib/conversation.js?v=87";
-import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=87";
-import { createSessionSnapshot, parseSessionSnapshot } from "./lib/session-snapshot.js?v=87";
+} from "./lib/format.js?v=88";
+import { assistantReplyGroups, conversationTurns, mapResultsToTurns } from "./lib/conversation.js?v=88";
+import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=88";
+import { createSessionSnapshot, parseSessionSnapshot } from "./lib/session-snapshot.js?v=88";
 
 function storedCompletionKeys() {
   try {
@@ -777,7 +777,7 @@ function updateSyncSummary() {
   const freshness = state.lastSyncAt
     ? `${relativeTime(state.lastSyncAt)}同步`
     : state.snapshotHydratedAt
-      ? state.snapshotStale ? "显示缓存，正在同步" : "显示缓存"
+      ? state.snapshotStale ? "缓存较旧，正在同步" : "显示缓存，正在同步"
       : "正在同步";
   const summary = [];
   if (waiting) summary.push(`${waiting} 项等你处理`);
