@@ -282,6 +282,12 @@ export async function createPhoneControlServer({
         socketPath: path.join(codexHome, "app-server-control", "app-server-control.sock"),
         codexCommand: config.codexCommand,
         transportMode: config.interactions.transport,
+        // Codex CLI 0.147+ gives every resumed thread a single writer. A
+        // loaded CLI/Desktop thread may still be owned by its original
+        // client, so observing it must not implicitly call thread/resume.
+        // Phone-created threads are the only restored threads this managed
+        // bridge can safely resume without an explicit handoff.
+        shouldAutoResumeLoadedThread: (threadId) => store.getSummary(threadId)?.surface === "Phone",
       })
       : null
     : appServerBridge;

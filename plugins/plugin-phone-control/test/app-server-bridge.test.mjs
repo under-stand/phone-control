@@ -930,6 +930,29 @@ export const tests = [
     },
   },
   {
+    name: "does not auto-resume loaded threads rejected by the ownership policy",
+    async run() {
+      const harness = transportHarness({ loadedThreads: ["thread-phone", "thread-cli"] });
+      const bridge = new CodexAppServerBridge({
+        transportFactory: harness.transportFactory,
+        reconnect: false,
+        loadedThreadRefreshMs: 0,
+        shouldAutoResumeLoadedThread: (threadId) => threadId === "thread-phone",
+      });
+      try {
+        assert.equal(await bridge.start(), true);
+        assert.deepEqual(bridge.status().subscribedThreads, ["thread-phone"]);
+        assert.deepEqual(
+          harness.sent.filter((message) => message.method === "thread/resume").map((message) => message.params.threadId),
+          ["thread-phone"],
+        );
+        assert.equal(bridge.status().loadedThreads.includes("thread-cli"), true);
+      } finally {
+        await bridge.close();
+      }
+    },
+  },
+  {
     name: "subscribes loaded threads with bounded metadata concurrency",
     async run() {
       const loadedThreads = ["thread-1", "thread-2", "thread-3", "thread-4", "thread-5"];

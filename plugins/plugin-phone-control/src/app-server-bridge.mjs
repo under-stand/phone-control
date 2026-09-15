@@ -419,6 +419,7 @@ export class CodexAppServerBridge extends EventEmitter {
     loadedThreadRefreshMs = LOADED_THREAD_REFRESH_MS,
     subscriptionRetryMinMs = SUBSCRIPTION_RETRY_MIN_MS,
     subscriptionConcurrency = SUBSCRIPTION_CONCURRENCY,
+    shouldAutoResumeLoadedThread = null,
     reconnect = true,
     auditLogPath = null,
   } = {}) {
@@ -432,6 +433,9 @@ export class CodexAppServerBridge extends EventEmitter {
     this.loadedThreadRefreshMs = loadedThreadRefreshMs;
     this.subscriptionRetryMinMs = subscriptionRetryMinMs;
     this.subscriptionConcurrency = Math.max(1, Math.min(8, Number.isSafeInteger(subscriptionConcurrency) ? subscriptionConcurrency : SUBSCRIPTION_CONCURRENCY));
+    this.shouldAutoResumeLoadedThread = typeof shouldAutoResumeLoadedThread === "function"
+      ? shouldAutoResumeLoadedThread
+      : () => true;
     this.reconnect = reconnect;
     this.auditLogPath = auditLogPath;
     this.transport = null;
@@ -971,7 +975,15 @@ export class CodexAppServerBridge extends EventEmitter {
     // session while still limiting pressure on the App Server. If a transport
     // fails with an oversized response, all in-flight metadata requests are
     // quarantined because the wire cannot identify which response overflowed.
-    const pending = Array.from(this.loadedThreads).filter((threadId) => !this.subscribedThreads.has(threadId));
+    const pending = Array.from(this.loadedThreads).filter((threadId) => {
+      if (this.subscribedThreads.has(threadId)) return false;
+      try {
+        return this.shouldAutoResumeLoadedThread(threadId) !== false;
+      } catch (error) {
+        this.emit("warning", new Error(`Could not decide whether to auto-resume loaded thread ${threadId}: ${error.message}`));
+        return false;
+      }
+    });
     let nextIndex = 0;
     const worker = async () => {
       while (this.initialized) {
