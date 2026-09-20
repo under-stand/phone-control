@@ -1,6 +1,15 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 export const AUTH_COOKIE = "phone_control_token";
+
+export function instanceAuthCookie(instanceId) {
+  if (typeof instanceId !== "string" || !instanceId) throw new Error("Phone Control instance ID is required");
+  const suffix = createHash("sha256")
+    .update(`phone-control-cookie\0${instanceId}`)
+    .digest("hex")
+    .slice(0, 24);
+  return `${AUTH_COOKIE}_${suffix}`;
+}
 
 export function tokenMatches(candidate, expected) {
   if (typeof candidate !== "string" || typeof expected !== "string") return false;
@@ -23,15 +32,15 @@ export function parseCookies(header = "") {
   );
 }
 
-export function requestToken(request, url) {
+export function requestToken(request, url, cookieName = AUTH_COOKIE) {
   const authorization = request.headers.authorization;
   if (authorization?.startsWith("Bearer ")) return authorization.slice(7);
   const cookies = parseCookies(request.headers.cookie);
-  return cookies[AUTH_COOKIE] || url.searchParams.get("token") || null;
+  return cookies[cookieName] || url.searchParams.get("token") || null;
 }
 
-export function cookieCredential(request) {
-  return parseCookies(request.headers.cookie)[AUTH_COOKIE] || null;
+export function cookieCredential(request, cookieName = AUTH_COOKIE) {
+  return parseCookies(request.headers.cookie)[cookieName] || null;
 }
 
 export function bearerToken(request) {
@@ -39,9 +48,10 @@ export function bearerToken(request) {
   return authorization?.startsWith("Bearer ") ? authorization.slice(7) : null;
 }
 
-export function authCookie(token, { clear = false, secure = false } = {}) {
+export function authCookie(token, { clear = false, name = AUTH_COOKIE, secure = false } = {}) {
+  if (!/^[A-Za-z0-9_]+$/.test(name)) throw new Error("Authentication cookie name is invalid");
   const value = clear ? "" : encodeURIComponent(token);
-  return `${AUTH_COOKIE}=${value}; Path=/; HttpOnly; SameSite=Strict${secure ? "; Secure" : ""}${clear ? "; Max-Age=0" : "; Max-Age=2592000"}`;
+  return `${name}=${value}; Path=/; HttpOnly; SameSite=Strict${secure ? "; Secure" : ""}${clear ? "; Max-Age=0" : "; Max-Age=2592000"}`;
 }
 
 export function isLoopback(address) {

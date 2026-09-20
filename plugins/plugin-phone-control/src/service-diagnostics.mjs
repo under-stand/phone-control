@@ -18,6 +18,15 @@ export function nodeRuntimeStatus(version = process.version) {
   };
 }
 
+export function assertSupportedNodeVersion(version) {
+  const status = nodeRuntimeStatus(version);
+  if (!status.supported) {
+    const detected = status.major ? `Node ${status.version}` : `unrecognized version ${JSON.stringify(version)}`;
+    throw new Error(`The selected service runtime reports ${detected}; Phone Control requires Node ${status.minimumMajor}+`);
+  }
+  return status;
+}
+
 export function expectedStablePluginRoot({ currentRoot, homeDir } = {}) {
   const fallbackRoot = homeDir ? path.join(homeDir, "plugins", "plugin-phone-control") : null;
   if (!currentRoot) return fallbackRoot;

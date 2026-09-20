@@ -175,7 +175,8 @@ node ./bin/phone-control.mjs service status
 Linux 会优先使用 systemd user service，macOS 使用
 原生 `launchd`，其他不支持 systemd 的 Unix 环境自动使用独立的 tmux 会话和 `@reboot` crontab。
 
-`service install` 会固定当前 Node 和插件路径。升级 Node 或移动项目后，需要重新执行一次该命令。
+`service install` 会固定当前 Node 和插件路径，并在修改服务前拒绝低于 Node 22 的 runtime。升级 Node 或
+移动项目后，需要重新执行一次该命令。
 Windows 一键安装器创建当前用户的计划任务。
 
 #### 4. 让手机访问
@@ -194,6 +195,14 @@ node ./bin/phone-control.mjs pair --no-qr
 
 从零部署 VPS、配置 FRP、HTTPS 证书和回滚入口，见
 [VPS Relay 指南](docs/vps-relay.md)。Relay 默认先进入 standby，只有所有诊断通过后才能激活。
+
+多台工作站可以连接同一个 VPS，但每台必须使用不同的 FRP `--name` 和 `--remote-port`。新版会为每个
+Phone Control 安装实例使用独立 Cookie 名称，因此相同 VPS 主机名的不同 HTTPS 端口可以同时保持登录；
+长期使用仍建议为每台机器分配独立子域，便于证书、路由和机器身份审计。当前不支持
+`https://example.test/machine-a` 这类路径前缀。
+
+从旧固定 Cookie 升级时，旧凭证当前所属的机器会自动迁移；同一主机名下的另一台机器可能需要重新打开
+一次性配对链接。迁移完成后，两台机器的凭证可以在同一手机浏览器中同时保留。
 
 ##### Tailscale：仅 tailnet 可见
 
@@ -395,6 +404,7 @@ node ./bin/phone-control.mjs service install \
 | `service restart` 后出现 `EADDRINUSE` | 更新并重新安装服务；新版会精确结束旧 Phone Control Node 进程及其 Codex 子进程，再启动新实例 |
 | 从手机控制的会话执行 `service install/restart` 后手机断线 | 这类命令会停止承载当前会话的受管 App Server；新版会在停服务前拒绝。请改在独立 PowerShell 窗口执行，或使用未由 Phone Control 持有的 Desktop/CLI 会话 |
 | 一次性配对码提示口令错误 | 不要把 `code` 填进“访问口令”；用同一浏览器打开完整的 `/pair?code=...` URL，且不要在 `localhost`、`127.0.0.1` 与 Tailscale 域名之间混用 Cookie |
+| 两台 VPS Relay 机器只能保持一台登录 | 更新到包含实例级 Cookie 的版本并分别重新配对；两台机器必须使用不同的 FRP `--name` 和 `--remote-port`。旧版本不能只靠相同主机名的不同端口隔离 Cookie，可临时改用不同子域 |
 | 可以发指令但没有审批按钮 | 在新建会话或空闲会话的下一轮设置中选择“超出工作区时询问”；只有 Codex 实际申请额外权限时才显示按钮，且只接管手机发起或追加的精确 turn。旧 Hook 流程另按“审批与交互”章节开启兼容开关 |
 | 后台回来后显示断线 | 点击顶栏连接状态立即探测；页面会同时重建 SSE |
 | 收不到系统通知 | 确认使用 HTTPS，并以“开启提醒”时的测试通知为准 |

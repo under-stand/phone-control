@@ -8,6 +8,11 @@ const MAX_TEXT_LENGTH = 4_000;
 const TERMINAL_STATUSES = new Set(["delivered", "failed", "needs_review", "canceled", "expired"]);
 const PENDING_STATUSES = new Set(["queued", "waiting", "sending"]);
 
+function shouldExpire(entry, now) {
+  return (PENDING_STATUSES.has(entry.status) || entry.status === "needs_review")
+    && Date.parse(entry.expiresAt) <= now;
+}
+
 function cleanText(value) {
   if (typeof value !== "string") throw Object.assign(new Error("Message text is invalid"), { statusCode: 400 });
   const text = value.replace(/\r\n?/g, "\n").trim();
@@ -110,7 +115,7 @@ export class CommandOutbox extends EventEmitter {
     }
     let changed = false;
     for (const entry of this.entries.values()) {
-      if (!PENDING_STATUSES.has(entry.status) || Date.parse(entry.expiresAt) > now) continue;
+      if (!shouldExpire(entry, now)) continue;
       this.markExpired(entry, now);
       changed = true;
     }
@@ -118,9 +123,12 @@ export class CommandOutbox extends EventEmitter {
   }
 
   markExpired(entry, now = this.now()) {
+    const reviewExpired = entry.status === "needs_review";
     entry.status = "expired";
     entry.waitingFor = null;
-    entry.lastError = "Queued instruction expired before it could be delivered";
+    entry.lastError = reviewExpired
+      ? "The delivery review window expired; no instruction remains pending"
+      : "Queued instruction expired before it could be delivered";
     entry.updatedAt = new Date(now).toISOString();
     this.emit("change", clone(entry));
   }
@@ -150,14 +158,19 @@ export class CommandOutbox extends EventEmitter {
 
   list({ sessionId = null, deviceId = null, includeTerminal = true } = {}) {
     const now = this.now();
+    let expired = false;
     const result = [];
     for (const entry of this.entries.values()) {
       if (sessionId && entry.sessionId !== sessionId) continue;
       if (deviceId && entry.deviceId !== deviceId) continue;
       if (!includeTerminal && TERMINAL_STATUSES.has(entry.status)) continue;
-      if (PENDING_STATUSES.has(entry.status) && Date.parse(entry.expiresAt) <= now) this.markExpired(entry, now);
+      if (shouldExpire(entry, now)) {
+        this.markExpired(entry, now);
+        expired = true;
+      }
       result.push(this.public(entry));
     }
+    if (expired) void this.queuePersist();
     return result.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 

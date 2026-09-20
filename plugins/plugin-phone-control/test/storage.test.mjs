@@ -202,15 +202,20 @@ export const tests = [
           token: "keep-this-token",
         })}\n`, { mode: 0o600 });
         const config = await loadConfig({ environment: { PHONE_CONTROL_DATA_DIR: dataDir } });
-        assert.equal(config.version, 4);
+        assert.equal(config.version, 5);
+        assert.match(config.instanceId, /^[a-f0-9]{32}$/);
         assert.equal(config.token, "keep-this-token");
         assert.equal(config.approvals.enabled, false);
         assert.equal(config.interactions.enabled, true);
         assert.equal(config.interactions.transport, "auto");
         assert.equal(config.codexCommand, "codex");
         const stored = JSON.parse(await readFile(path.join(dataDir, "config.json"), "utf8"));
-        assert.equal(stored.version, 4);
+        assert.equal(stored.version, 5);
+        assert.equal(stored.instanceId, config.instanceId);
         assert.equal(stored.retentionDays, 14);
+
+        const restored = await loadConfig({ environment: { PHONE_CONTROL_DATA_DIR: dataDir } });
+        assert.equal(restored.instanceId, config.instanceId);
       } finally {
         await rm(dataDir, { recursive: true, force: true });
       }
@@ -236,6 +241,24 @@ export const tests = [
         assert.equal(restored.interactions.transport, "stdio");
       } finally {
         await rm(dataDir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: "creates a stable identity that differs between installations",
+    async run() {
+      const firstDir = await mkdtemp(path.join(os.tmpdir(), "phone-control-config-instance-a-"));
+      const secondDir = await mkdtemp(path.join(os.tmpdir(), "phone-control-config-instance-b-"));
+      try {
+        const first = await loadConfig({ environment: { PHONE_CONTROL_DATA_DIR: firstDir } });
+        const restored = await loadConfig({ environment: { PHONE_CONTROL_DATA_DIR: firstDir } });
+        const second = await loadConfig({ environment: { PHONE_CONTROL_DATA_DIR: secondDir } });
+        assert.match(first.instanceId, /^[a-f0-9]{32}$/);
+        assert.equal(restored.instanceId, first.instanceId);
+        assert.notEqual(second.instanceId, first.instanceId);
+      } finally {
+        await rm(firstDir, { recursive: true, force: true });
+        await rm(secondDir, { recursive: true, force: true });
       }
     },
   },
@@ -367,15 +390,16 @@ export const tests = [
       const dataDir = await mkdtemp(path.join(os.tmpdir(), "phone-control-message-dedupe-"));
       const eventLogPath = path.join(dataDir, "events.jsonl");
       try {
+        const recent = new Date(Date.now() - 1_000).toISOString();
         const first = {
           eventId: "message-event",
           source: "rollout",
           sessionId: "message-session",
           kind: "user_prompt",
-          at: "2026-08-24T12:00:00.000Z",
+          at: recent,
           message: { role: "user", text: "Run the same task" },
         };
-        await writeFile(eventLogPath, `${JSON.stringify(first)}\n${JSON.stringify({ ...first, eventId: "message-item", at: "2026-08-24T12:00:00.400Z" })}\n`, { mode: 0o600 });
+        await writeFile(eventLogPath, `${JSON.stringify(first)}\n${JSON.stringify({ ...first, eventId: "message-item", at: new Date(Date.parse(recent) + 400).toISOString() })}\n`, { mode: 0o600 });
         const store = new SessionStore({ eventLogPath });
         await store.restore();
         store.ingest({ eventId: "later", sessionId: "message-session", kind: "turn_complete", at: new Date().toISOString() });

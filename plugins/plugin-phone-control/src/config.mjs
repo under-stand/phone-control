@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import os from "node:os";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dataPaths, resolveDataDir } from "./paths.mjs";
@@ -8,6 +8,16 @@ const DEFAULT_PORT = 8787;
 const DEFAULT_RETENTION_DAYS = 14;
 const DEFAULT_MAX_EVENT_LOG_BYTES = 8 * 1024 * 1024;
 const APP_SERVER_TRANSPORTS = new Set(["auto", "socket", "stdio"]);
+const CONFIG_VERSION = 5;
+
+function derivedInstanceId(token) {
+  return createHash("sha256").update(`phone-control-instance\0${token}`).digest("hex").slice(0, 32);
+}
+
+function validInstanceId(value, fallback) {
+  const instanceId = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return /^[a-f0-9]{32}$/.test(instanceId) ? instanceId : fallback;
+}
 
 function validPort(value, fallback = DEFAULT_PORT) {
   const port = Number(value);
@@ -36,7 +46,8 @@ function validAppServerTransport(value, fallback = "auto") {
 
 function storedConfig(config) {
   return {
-    version: 4,
+    version: CONFIG_VERSION,
+    instanceId: config.instanceId,
     host: config.host,
     port: config.port,
     token: config.token,
@@ -77,11 +88,13 @@ export async function loadConfig({ environment = process.env, create = true } = 
 
   if (!stored && create) {
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
+    const token = environment.PHONE_CONTROL_TOKEN || randomBytes(32).toString("base64url");
     const seed = {
-      version: 4,
+      version: CONFIG_VERSION,
+      instanceId: randomBytes(16).toString("hex"),
       host: environment.PHONE_CONTROL_HOST || "127.0.0.1",
       port: validPort(environment.PHONE_CONTROL_PORT),
-      token: environment.PHONE_CONTROL_TOKEN || randomBytes(32).toString("base64url"),
+      token,
       machineName: environment.PHONE_CONTROL_MACHINE_NAME || os.hostname(),
       publicUrl: environment.PHONE_CONTROL_PUBLIC_URL || null,
       secureCookies: envBoolean(environment.PHONE_CONTROL_SECURE_COOKIES),
@@ -106,11 +119,13 @@ export async function loadConfig({ environment = process.env, create = true } = 
     }
   }
 
+  const token = environment.PHONE_CONTROL_TOKEN || stored?.token || randomBytes(32).toString("base64url");
   const config = {
-    version: 4,
+    version: CONFIG_VERSION,
+    instanceId: validInstanceId(stored?.instanceId, derivedInstanceId(token)),
     host: environment.PHONE_CONTROL_HOST || stored?.host || "127.0.0.1",
     port: validPort(environment.PHONE_CONTROL_PORT ?? stored?.port),
-    token: environment.PHONE_CONTROL_TOKEN || stored?.token || randomBytes(32).toString("base64url"),
+    token,
     machineName: environment.PHONE_CONTROL_MACHINE_NAME || stored?.machineName || os.hostname(),
     publicUrl: environment.PHONE_CONTROL_PUBLIC_URL || stored?.publicUrl || null,
     secureCookies: envBoolean(environment.PHONE_CONTROL_SECURE_COOKIES, stored?.secureCookies || false),

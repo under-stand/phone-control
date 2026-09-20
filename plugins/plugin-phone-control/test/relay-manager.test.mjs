@@ -68,6 +68,15 @@ export const tests = [
           remotePort: 27878,
           publicUrl: "http://relay.example.test:28443",
         }), /must use HTTPS/);
+        await assert.rejects(configureRelay({
+          dataDir: temporary,
+          clientPath,
+          tokenFile,
+          serverAddr: "relay.example.test",
+          serverPort: 27070,
+          remotePort: 27878,
+          publicUrl: "https://relay.example.test:28443/machine-a",
+        }), /must not contain a path/);
       } finally {
         await rm(temporary, { recursive: true, force: true });
       }

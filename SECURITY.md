@@ -43,7 +43,8 @@ Windows 的“移交电脑 / 手机接管”只对来源为 Desktop 的用户会
   允许显式清理。清理不会恢复访问，也不会删除任何仍有效的设备凭证；
 - 每台设备可以保存一个目标 session ID，用于筛选该设备的完成通知；设备列表不会向其他设备公开
   这一偏好，目标设置不能指向手机任务 API 之外的内部或诊断会话；
-- 浏览器后续使用 `HttpOnly; SameSite=Strict` Cookie；HTTPS 部署应启用 `Secure`；
+- 浏览器后续使用 `HttpOnly; SameSite=Strict` Cookie；每个安装实例使用由稳定随机实例 ID 派生的独立
+  Cookie 名称，避免同一 VPS 主机名的不同端口互相覆盖凭证；HTTPS 部署应启用 `Secure`；
 - API 不启用 CORS，写操作同时检查自定义客户端头、Fetch Site 和同源 Origin；
 - Hook ingestion 同时要求 bearer token 和 loopback 来源。
 

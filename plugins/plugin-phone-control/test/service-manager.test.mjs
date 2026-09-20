@@ -16,7 +16,7 @@ import {
   parseServiceMetadata,
 } from "../src/service-manager.mjs";
 import { findTmuxSessionId } from "../src/tmux-utils.mjs";
-import { expectedStablePluginRoot, nodeRuntimeStatus, serviceDefinitionStatus } from "../src/service-diagnostics.mjs";
+import { assertSupportedNodeVersion, expectedStablePluginRoot, nodeRuntimeStatus, serviceDefinitionStatus } from "../src/service-diagnostics.mjs";
 
 const options = {
   root: "/opt/phone control",
@@ -159,6 +159,8 @@ export const tests = [
     async run() {
       assert.equal(nodeRuntimeStatus("v16.20.2").supported, false);
       assert.equal(nodeRuntimeStatus("v22.18.0").supported, true);
+      assert.throws(() => assertSupportedNodeVersion("v16.20.2"), /requires Node 22\+/);
+      assert.equal(assertSupportedNodeVersion("v22.18.0").major, 22);
       const stale = serviceDefinitionStatus({
         service: { definition: { runtime: "/old/node", entry: "/workspace/bin/phone-control.mjs" } },
         expectedRoot: "/home/me/plugins/plugin-phone-control",

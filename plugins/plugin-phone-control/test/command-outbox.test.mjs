@@ -48,4 +48,25 @@ test("expires pending instructions on restore", async () => {
   }
 });
 
+test("expires stale delivery reviews instead of keeping them in the inbox", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "phone-control-outbox-"));
+  const filePath = path.join(directory, "outbox.json");
+  try {
+    let now = Date.parse("2026-09-01T00:00:00.000Z");
+    const outbox = new CommandOutbox({ filePath, now: () => now, ttlMs: 1_000 });
+    await outbox.enqueue({ id: "queue-00000003", sessionId: "thread-3", deviceId: "device-a", text: "确认送达" });
+    await outbox.update("queue-00000003", {
+      status: "needs_review",
+      waitingFor: null,
+      lastError: "The Codex turn changed while this instruction was waiting",
+    });
+    now += 2_000;
+    assert.equal(outbox.list({ sessionId: "thread-3" })[0].status, "expired");
+    await outbox.flush();
+    assert.equal(JSON.parse(await readFile(filePath, "utf8")).entries[0].status, "expired");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 export { tests };

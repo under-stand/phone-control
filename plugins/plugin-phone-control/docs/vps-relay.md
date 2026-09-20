@@ -105,6 +105,30 @@ phone-control relay activate
 phone-control service restart
 ```
 
+## Multiple workstations on one VPS
+
+Each workstation must have a unique FRP proxy name and remote port. Extend the server's
+`allowPorts` range to include only those explicit ports; `maxPortsPerClient = 1` can remain in
+place because it applies to each connected FRP client. Do not reuse one remote port for two
+workstations.
+
+Use one of these HTTPS layouts:
+
+- Preferred: give each workstation a dedicated hostname, terminate both on port 443, and route
+  each Nginx `server_name` to its workstation's loopback FRP port.
+- Supported: use one hostname with a different HTTPS port for each workstation. Current Phone
+  Control releases namespace device cookies per installation so the browser can retain both
+  credentials even though HTTP cookies do not otherwise distinguish ports.
+
+Set each workstation's `--public-url` to its exact public origin and use a distinct `--name`.
+Generate a new pairing link after activating or changing the endpoint. Path-prefixed URLs such as
+`https://control.example.test/machine-a` are not supported because the PWA and API currently use
+root-relative routes; relay configuration rejects them explicitly.
+
+When upgrading from the legacy fixed cookie, the workstation that owns the browser's current
+credential migrates automatically. Another workstation on the same hostname may require one new
+single-use pairing link. Once migrated, both instance-scoped credentials coexist in the browser.
+
 Rollback restores both the public URL and cookie transport setting that existed before relay
 configuration. An active endpoint must be deactivated before it can be reconfigured:
 

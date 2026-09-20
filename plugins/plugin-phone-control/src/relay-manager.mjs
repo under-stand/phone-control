@@ -60,6 +60,9 @@ function validPublicUrl(value) {
   if (parsed.username || parsed.password || parsed.search || parsed.hash) {
     throw new Error("Relay public URL must not contain credentials, a query, or a fragment");
   }
+  if (parsed.pathname !== "/") {
+    throw new Error("Relay public URL must not contain a path; use a dedicated hostname or port");
+  }
   return parsed.href.replace(/\/$/, "");
 }
 

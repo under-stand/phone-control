@@ -3,7 +3,7 @@ import { PassThrough } from "node:stream";
 import { normalizeHookInput } from "../src/hook-normalizer.mjs";
 import { createRolloutContext, normalizeRolloutRecord } from "../src/rollout-parser.mjs";
 import { SessionStore } from "../src/session-store.mjs";
-import { tokenMatches, parseCookies } from "../src/auth.mjs";
+import { AUTH_COOKIE, authCookie, cookieCredential, instanceAuthCookie, tokenMatches, parseCookies } from "../src/auth.mjs";
 import { createFrameParser, encodeWebSocketFrame, MAX_FRAME_BYTES } from "../src/unix-websocket.mjs";
 
 export const tests = [
@@ -743,6 +743,15 @@ export const tests = [
       assert.equal(tokenMatches("secret", "secret"), true);
       assert.equal(tokenMatches("short", "a-long-secret"), false);
       assert.equal(parseCookies("a=1; phone_control_token=hello%20world").phone_control_token, "hello world");
+      const first = instanceAuthCookie("a".repeat(32));
+      const second = instanceAuthCookie("b".repeat(32));
+      assert.notEqual(first, second);
+      const request = { headers: { cookie: `${first}=first; ${second}=second; ${AUTH_COOKIE}=legacy` } };
+      assert.equal(cookieCredential(request, first), "first");
+      assert.equal(cookieCredential(request, second), "second");
+      assert.equal(cookieCredential(request), "legacy");
+      assert.match(authCookie("secret", { name: first, secure: true }), new RegExp(`^${first}=secret; .*; Secure;`));
+      assert.throws(() => authCookie("secret", { name: "invalid cookie" }), /name is invalid/);
     },
   },
 ];

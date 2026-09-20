@@ -6,8 +6,10 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import {
+  AUTH_COOKIE,
   authCookie,
   cookieCredential,
+  instanceAuthCookie,
   isInternalAuthorized,
   isSameOriginWrite,
   secureRequest,
@@ -207,6 +209,7 @@ export async function createPhoneControlServer({
 } = {}) {
   if (!config?.token) throw new Error("Phone Control requires an access token");
   const paths = dataPaths(config.dataDir);
+  const authCookieName = instanceAuthCookie(config.instanceId || config.token);
   const publicDir = path.join(pluginRoot, "public");
   const store = new SessionStore({
     eventLogPath: paths.eventLog,
@@ -761,8 +764,17 @@ export async function createPhoneControlServer({
   function cookieFor(request, credential, options = {}) {
     return authCookie(credential, {
       ...options,
+      name: authCookieName,
       secure: secureRequest(request, config.secureCookies),
     });
+  }
+
+  function clearAuthCookies(request) {
+    const secure = secureRequest(request, config.secureCookies);
+    return [
+      authCookie("", { clear: true, name: authCookieName, secure }),
+      authCookie("", { clear: true, name: AUTH_COOKIE, secure }),
+    ];
   }
 
   function requestBaseUrl(request) {
@@ -789,8 +801,14 @@ export async function createPhoneControlServer({
           return;
         }
       }
-      let device = devices.authenticate(cookieCredential(request));
-      if (!device && tokenMatches(cookieCredential(request), config.token)) {
+      const credential = cookieCredential(request, authCookieName);
+      const legacyCredential = credential ? null : cookieCredential(request, AUTH_COOKIE);
+      let device = devices.authenticate(credential);
+      if (!device && legacyCredential) {
+        device = devices.authenticate(legacyCredential);
+        if (device) response.setHeader("set-cookie", cookieFor(request, legacyCredential));
+      }
+      if (!device && tokenMatches(credential || legacyCredential, config.token)) {
         const migrated = pairDevice(request, "Migrated browser");
         device = migrated.device;
         response.setHeader("set-cookie", cookieFor(request, migrated.credential));
@@ -996,7 +1014,7 @@ export async function createPhoneControlServer({
         }
         browserLeases.clearDevice(device.id);
         browserReplay.clearActor(device.id);
-        json(response, 200, { ok: true }, { "set-cookie": cookieFor(request, "", { clear: true }) });
+        json(response, 200, { ok: true }, { "set-cookie": clearAuthCookies(request) });
         return;
       }
 
@@ -1258,7 +1276,7 @@ export async function createPhoneControlServer({
         browserLeases.clearDevice(id);
         browserReplay.clearActor(id);
         await push.unsubscribe(id);
-        const headers = id === device.id ? { "set-cookie": cookieFor(request, "", { clear: true }) } : {};
+        const headers = id === device.id ? { "set-cookie": clearAuthCookies(request) } : {};
         json(response, 200, { ok: true, revokedDeviceId: id }, headers);
         return;
       }

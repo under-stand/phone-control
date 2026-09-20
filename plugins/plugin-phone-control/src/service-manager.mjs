@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { access, chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { assertSupportedNodeVersion } from "./service-diagnostics.mjs";
 import { findTmuxSessionId } from "./tmux-utils.mjs";
 
 const CRON_MARKER = "# phone-control-managed";
@@ -263,6 +264,11 @@ async function atomicWrite(filePath, body, mode) {
 async function validateServiceRuntime({ root, runtime = process.execPath }) {
   const metadata = serviceMetadata({ root, runtime });
   await Promise.all([access(metadata.runtime), access(metadata.entry)]);
+  const version = await run(metadata.runtime, ["--version"], { inherit: false });
+  if (version.code !== 0) {
+    throw new Error(`The selected service runtime did not report its Node version: ${version.stderr.trim() || `exit ${version.code}`}`);
+  }
+  assertSupportedNodeVersion(version.stdout.trim());
   const result = await run(metadata.runtime, [metadata.entry, "--help"], { inherit: false });
   if (result.code !== 0) throw new Error(`The selected Node runtime cannot start Phone Control: ${result.stderr.trim() || `exit ${result.code}`}`);
   return metadata;
