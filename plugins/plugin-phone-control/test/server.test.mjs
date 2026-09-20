@@ -588,6 +588,25 @@ export const tests = [
         assert.equal(boundedDetail.body.session.eventsTotal, 40);
         assert.equal(boundedDetail.body.session.eventsStart, 16);
         assert.equal(boundedDetail.body.session.eventsPartial, true);
+
+        for (let index = 0; index < 40; index += 1) {
+          runtime.store.ingest({
+            eventId: `prompt-window-${index}`,
+            sessionId: "session-prompt-window",
+            turnId: "long-turn",
+            kind: index === 0 ? "user_prompt" : "tool_start",
+            at: new Date(Date.parse("2026-08-24T02:00:00Z") + index * 1_000).toISOString(),
+            tool: index === 0 ? null : { name: "exec" },
+            message: index === 0 ? { role: "user", text: "保留长轮次的开场提问" } : null,
+          });
+        }
+        const promptWindow = await request({ port: started.port, pathname: "/api/sessions/session-prompt-window?events=24", headers: { cookie } });
+        assert.equal(promptWindow.status, 200);
+        assert.equal(promptWindow.body.session.events.length, 25);
+        assert.equal(promptWindow.body.session.eventsStart, 0);
+        assert.equal(promptWindow.body.session.events[0].kind, "user_prompt");
+        assert.equal(promptWindow.body.session.events[0].message.text, "保留长轮次的开场提问");
+        assert.equal(promptWindow.body.session.eventsPartial, true);
         const completeDetail = await request({ port: started.port, pathname: "/api/sessions/session-window?events=all", headers: { cookie } });
         assert.equal(completeDetail.body.session.events.length, 40);
         assert.equal(completeDetail.body.session.eventsPartial, false);
@@ -941,7 +960,7 @@ export const tests = [
         assert.equal(detail.body.session.control.canAnswer, true);
         const status = await request({ port: started.port, pathname: "/api/status", headers: { cookie } });
         assert.equal(status.status, 200);
-        assert.equal(status.body.version, "0.13.0");
+        assert.equal(status.body.version, "0.13.1");
         assert.equal(status.body.codexHome, undefined);
         assert.equal(status.body.device, undefined);
         assert.equal(status.body.appServer.threadStates, undefined);

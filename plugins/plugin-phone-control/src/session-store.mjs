@@ -156,6 +156,26 @@ function publicEvent(event) {
   return copy;
 }
 
+function selectSessionEvents(events, eventLimit) {
+  if (!Number.isFinite(eventLimit)) return { events, start: 0 };
+  const limit = Math.max(0, Math.floor(eventLimit));
+  if (limit >= events.length) return { events, start: 0 };
+  const start = Math.max(0, events.length - limit);
+  const selected = events.slice(start);
+  const first = selected[0];
+  if (!first?.turnId) return { events: selected, start };
+
+  // A bounded detail response may begin halfway through a long turn. Keep
+  // every user prompt from that turn so the mobile card never renders a
+  // reply-only turn just because its opening prompt fell outside the window.
+  const leadingPrompts = events
+    .slice(0, start)
+    .filter((event) => event.turnId === first.turnId && event.kind === "user_prompt");
+  return leadingPrompts.length
+    ? { events: [...leadingPrompts, ...selected], start: leadingPrompts.reduce((index, event) => Math.min(index, events.indexOf(event)), start) }
+    : { events: selected, start };
+}
+
 function newSession(event) {
   return {
     id: event.sessionId,
@@ -860,8 +880,11 @@ export class SessionStore extends EventEmitter {
     // to delete them again in publicSummary(). On larger histories that wasted
     // work can dominate a mobile refresh.
     const boundedEventLimit = Number.isFinite(eventLimit) ? Math.max(0, Math.floor(eventLimit)) : null;
+    const selected = includeEvents
+      ? selectSessionEvents(session.events, boundedEventLimit)
+      : { events: [], start: 0 };
     const selectedEvents = includeEvents
-      ? (boundedEventLimit == null ? session.events : session.events.slice(-boundedEventLimit)).map(publicEvent)
+      ? selected.events.map(publicEvent)
       : [];
     const source = includeEvents
       ? Object.fromEntries(Object.entries({ ...session, events: selectedEvents }).filter(([key]) => key !== "taskResults"))
@@ -888,7 +911,7 @@ export class SessionStore extends EventEmitter {
     if (includeEvents) {
       copy.results = deriveTaskResults(session).map(detailTaskResult);
       copy.eventsTotal = session.events.length;
-      copy.eventsStart = Math.max(0, session.events.length - selectedEvents.length);
+      copy.eventsStart = selected.start;
       copy.eventsPartial = selectedEvents.length < session.events.length;
     }
     delete copy.testEvidence;
