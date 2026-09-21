@@ -54,6 +54,35 @@ export const tests = [
     },
   },
   {
+    name: "folds an unlabelled rollout assistant fragment into its later explicit turn",
+    run() {
+      const turns = conversationTurns([
+        { eventId: "response-item", at: "2026-08-28T15:42:41.000Z", kind: "assistant_message", origin: "rollout", message: { role: "assistant", text: "正在检查项目" } },
+        { eventId: "turn-start", at: "2026-08-28T15:42:42.000Z", kind: "turn_start", turnId: "turn-live" },
+        { eventId: "task-complete-copy", at: "2026-08-28T15:42:53.000Z", kind: "assistant_message", origin: "rollout", turnId: "turn-live", phase: "final_answer", message: { role: "assistant", text: "检查完成" } },
+        { eventId: "turn-complete", at: "2026-08-28T15:42:53.001Z", kind: "turn_complete", turnId: "turn-live" },
+      ]);
+      assert.equal(turns.length, 1);
+      assert.equal(turns[0].id, "turn-live");
+      assert.deepEqual(turns[0].assistantMessages.map((message) => message.id), ["response-item", "task-complete-copy"]);
+    },
+  },
+  {
+    name: "does not fold an assistant fragment after an unlabelled completed turn",
+    run() {
+      const turns = conversationTurns([
+        { eventId: "old-response", at: "2026-08-28T15:42:41.000Z", kind: "assistant_message", origin: "rollout", message: { role: "assistant", text: "上一轮结果" } },
+        { eventId: "old-complete", at: "2026-08-28T15:42:42.000Z", kind: "turn_complete" },
+        { eventId: "turn-start", at: "2026-08-28T15:42:43.000Z", kind: "turn_start", turnId: "turn-live" },
+        { eventId: "new-response", at: "2026-08-28T15:42:44.000Z", kind: "assistant_message", turnId: "turn-live", message: { role: "assistant", text: "这一轮结果" } },
+        { eventId: "new-complete", at: "2026-08-28T15:42:45.000Z", kind: "turn_complete", turnId: "turn-live" },
+      ]);
+      assert.equal(turns.length, 2);
+      assert.equal(turns.some((turn) => turn.assistantMessages.some((message) => message.id === "old-response")), true);
+      assert.equal(turns.some((turn) => turn.assistantMessages.some((message) => message.id === "new-response")), true);
+    },
+  },
+  {
     name: "keeps the same text in separate completed turns",
     run() {
       const turns = conversationTurns([

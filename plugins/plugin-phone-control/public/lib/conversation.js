@@ -3,7 +3,8 @@ function messageFingerprint(value) {
 }
 
 function eventTime(event) {
-  return new Date(event?.at || event?.updatedAt).getTime();
+  const value = typeof event === "string" ? event : event?.at || event?.updatedAt;
+  return new Date(value).getTime();
 }
 
 function eventOrigin(event) {
@@ -12,6 +13,69 @@ function eventOrigin(event) {
 
 function turnClosed(turn) {
   return turn?.events.some((event) => ["turn_complete", "session_end", "error", "aborted"].includes(event.kind));
+}
+
+const ORPHAN_ASSISTANT_MATCH_MS = 60_000;
+
+function hasExplicitTurnId(turn) {
+  return Boolean(turn?.events?.some((event) => event.turnId));
+}
+
+function orphanAssistantTurn(turn) {
+  return Boolean(turn
+    && !hasExplicitTurnId(turn)
+    && !turnClosed(turn)
+    && turn.assistantMessages?.length
+    && !turn.userMessages?.length);
+}
+
+function turnEventTime(turn, newest = false) {
+  const values = (turn?.events || []).map(eventTime).filter(Number.isFinite);
+  if (!values.length) return NaN;
+  return newest ? Math.max(...values) : Math.min(...values);
+}
+
+function mergeTurnMessages(target, source) {
+  for (const event of source.events || []) {
+    if (event.kind === "user_prompt") addMessage(target.userMessages, event);
+    if (event.kind === "assistant_message") addMessage(target.assistantMessages, event);
+  }
+  target.userMessages.sort((left, right) => eventTime(left.at) - eventTime(right.at));
+  target.assistantMessages.sort((left, right) => eventTime(left.at) - eventTime(right.at));
+  target.events.push(...(source.events || []));
+  target.events.sort((left, right) => eventTime(left) - eventTime(right));
+  target.at = [target.at, source.at].sort((left, right) => eventTime(left) - eventTime(right))[0] || target.at;
+  target.updatedAt = [target.updatedAt, source.updatedAt].sort((left, right) => eventTime(right) - eventTime(left))[0] || target.updatedAt;
+  target.model = target.model || source.model;
+  target.reasoningEffort = target.reasoningEffort || source.reasoningEffort;
+  target.serviceTier = target.serviceTier || source.serviceTier;
+}
+
+// Rollout response_item messages may be recorded without a turn id before the
+// later task_complete row supplies one. Keep such an unclosed assistant-only
+// fragment with the nearest explicit turn, but never merge across a completed
+// turn or a visible user prompt.
+function mergeOrphanAssistantTurns(turns, byId) {
+  for (const orphan of [...turns]) {
+    if (!orphanAssistantTurn(orphan)) continue;
+    const orphanAt = turnEventTime(orphan);
+    const candidates = turns
+      .filter((candidate) => candidate !== orphan && hasExplicitTurnId(candidate))
+      .filter((candidate) => {
+        const candidateStart = turnEventTime(candidate);
+        const candidateEnd = turnEventTime(candidate, true);
+        if (!Number.isFinite(orphanAt) || !Number.isFinite(candidateStart)) return false;
+        if (orphanAt > candidateEnd && turnClosed(candidate)) return false;
+        return Math.abs(orphanAt - candidateStart) <= ORPHAN_ASSISTANT_MATCH_MS;
+      })
+      .sort((left, right) => Math.abs(orphanAt - turnEventTime(left)) - Math.abs(orphanAt - turnEventTime(right)));
+    const target = candidates[0];
+    if (!target) continue;
+    mergeTurnMessages(target, orphan);
+    const index = turns.indexOf(orphan);
+    if (index >= 0) turns.splice(index, 1);
+    byId.delete(orphan.id);
+  }
 }
 
 export function conversationTurnStatus(turn, { result = null, historical = false } = {}) {
@@ -151,6 +215,7 @@ export function conversationTurns(events = []) {
     if (event.kind === "user_prompt") addMessage(turn.userMessages, event);
     if (event.kind === "assistant_message") addMessage(turn.assistantMessages, event);
   }
+  mergeOrphanAssistantTurns(turns, byId);
   return turns
     .filter((turn) => turn.userMessages.length || turn.assistantMessages.length)
     .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());

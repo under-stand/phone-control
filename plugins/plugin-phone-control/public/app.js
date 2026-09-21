@@ -9,11 +9,11 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=92";
-import { assistantReplyGroups, conversationTurnStatus, conversationTurns, mapResultsToTurns } from "./lib/conversation.js?v=92";
-import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=92";
-import { createSessionSnapshot, parseSessionSnapshot } from "./lib/session-snapshot.js?v=92";
-import { createConnectionState, isStreamHealthy as isConnectionStreamHealthy, reduceConnectionState } from "./lib/connection-state.js?v=92";
+} from "./lib/format.js?v=93";
+import { assistantReplyGroups, conversationTurnStatus, conversationTurns, mapResultsToTurns } from "./lib/conversation.js?v=93";
+import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=93";
+import { createSessionSnapshot, parseSessionSnapshot } from "./lib/session-snapshot.js?v=93";
+import { createConnectionState, isStreamHealthy as isConnectionStreamHealthy, reduceConnectionState } from "./lib/connection-state.js?v=93";
 
 function storedCompletionKeys() {
   try {
@@ -893,7 +893,11 @@ async function request(path, options = {}) {
       showPairing(true);
       throw new Error("UNAUTHORIZED");
     }
-    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `HTTP ${response.status}`);
+    if (!response.ok) {
+      const error = new Error((await response.json().catch(() => ({}))).error || `HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
     return response.json();
   } catch (error) {
     if (error.name === "AbortError") throw new Error("服务暂时未响应，正在恢复连接");
@@ -2098,7 +2102,7 @@ function rerenderCachedDetail(sessionId, { scrollTop = elements.detailContent.sc
 function approvalPanel(session) {
   if (session.pendingApproval?.kind !== "permission" || !session.pendingApproval.canRespond) return "";
   return `
-    <section class="approval-panel" data-approval-id="${escapeHtml(session.pendingApproval.id)}" data-session-id="${escapeHtml(session.id)}" data-turn-id="${escapeHtml(session.pendingApproval.turnId || session.turnId || "")}">
+    <section class="approval-panel" data-approval-id="${escapeHtml(session.pendingApproval.id)}" data-approval-state="pending" data-session-id="${escapeHtml(session.id)}" data-turn-id="${escapeHtml(session.pendingApproval.turnId || session.turnId || "")}" aria-busy="false">
       <p class="eyebrow">ONE-TIME DECISION</p>
       <h3>Codex 正在等待你的决定</h3>
       <p>${escapeHtml(session.pendingApproval.reason)}</p>
@@ -2908,24 +2912,55 @@ async function decideApproval(id, decision, sessionId = null, turnId = null, but
   const panel = button?.closest?.("[data-approval-id]");
   const status = panel?.querySelector("[data-approval-status]");
   const buttons = panel ? [...panel.querySelectorAll("button[data-decision]")] : [];
-  if (buttons.some((candidate) => candidate.disabled)) return;
+  if (!panel || !buttons.length) return;
+  if (panel.dataset.approvalState === "sending") {
+    if (status) status.textContent = "上一项决定正在处理中，请稍候…";
+    return;
+  }
+  panel.dataset.approvalState = "sending";
+  panel.setAttribute("aria-busy", "true");
   for (const candidate of buttons) candidate.disabled = true;
-  if (status) status.textContent = "正在送达 Codex…";
+  if (status) status.textContent = decision === "allow" ? "正在发送允许…" : "正在发送拒绝…";
+  const refreshApprovalView = async () => {
+    if (sessionId) state.detailDirtySessions.delete(sessionId);
+    await refreshSessions({ force: true });
+    const currentSessionId = sessionId || elements.detail.dataset.sessionId;
+    if (currentSessionId && elements.detail.dataset.sessionId === currentSessionId) {
+      await showDetails(currentSessionId, { open: false, preserveView: true });
+    }
+  };
   try {
     await request(`/api/approvals/${encodeURIComponent(id)}/decision`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ decision, sessionId, turnId }),
     });
+    panel.dataset.approvalState = "resolved";
+    panel.setAttribute("aria-busy", "false");
+    button.blur?.();
     toast(decision === "allow" ? "已允许本次操作" : "已拒绝本次操作");
     if (status) status.textContent = decision === "allow" ? "已允许本次操作" : "已拒绝本次操作";
-    await refreshSessions();
-    const currentSessionId = elements.detail.dataset.sessionId;
-    if (currentSessionId) await showDetails(currentSessionId, { open: false });
+    await refreshApprovalView();
   } catch (error) {
-    for (const candidate of buttons) candidate.disabled = false;
-    if (status) status.textContent = `发送失败：${error.message}`;
+    panel.dataset.approvalState = error.status >= 500 || !error.status ? "syncing" : "pending";
+    panel.setAttribute("aria-busy", "true");
+    button.blur?.();
+    if (status) status.textContent = error.status >= 500 || !error.status
+      ? "发送结果未确认，正在同步审批状态…"
+      : `发送失败：${error.message}`;
     toast(error.message);
+    try {
+      await refreshApprovalView();
+    } catch {
+      // Keep an uncertain single-use decision disabled until the next sync.
+    }
+    const refreshedPanel = [...elements.detailActions.querySelectorAll("[data-approval-id]")]
+      .find((candidate) => candidate.dataset.approvalId === String(id));
+    if (refreshedPanel && refreshedPanel.dataset.approvalState === "pending") {
+      for (const candidate of refreshedPanel.querySelectorAll("button[data-decision]")) candidate.disabled = false;
+      const refreshedStatus = refreshedPanel.querySelector("[data-approval-status]");
+      if (refreshedStatus) refreshedStatus.textContent = "审批仍在等待，可重新选择";
+    }
   }
 }
 
