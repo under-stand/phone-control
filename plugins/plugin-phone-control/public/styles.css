@@ -350,6 +350,8 @@ button { color: inherit; }
 .approval-actions button { padding: 11px; border: 0; border-radius: 11px; font-size: 11px; font-weight: 800; cursor: pointer; }
 .approval-actions .deny { background: #e5e1d9; }
 .approval-actions .allow { background: var(--violet); color: white; }
+.approval-actions button:disabled { cursor: wait; opacity: .58; }
+.approval-status { min-height: 15px; margin: 8px 0 0; color: #5a5088; font-size: 9px; text-align: center; }
 .question-panel { margin: 0; padding: 16px; border: 1px solid rgba(104,87,245,.28); border-radius: 16px; background: rgba(104,87,245,.06); }
 .question-panel h3 { margin: 0 0 15px; font-size: 17px; }
 .question-panel > small { display: block; margin-top: 12px; color: var(--muted); font-size: 9px; line-height: 1.5; }

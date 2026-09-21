@@ -9,11 +9,11 @@ import {
   sessionDisplayStatus,
   taskPreview,
   truncate,
-} from "./lib/format.js?v=91";
-import { assistantReplyGroups, conversationTurnStatus, conversationTurns, mapResultsToTurns } from "./lib/conversation.js?v=91";
-import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=91";
-import { createSessionSnapshot, parseSessionSnapshot } from "./lib/session-snapshot.js?v=91";
-import { createConnectionState, isStreamHealthy as isConnectionStreamHealthy, reduceConnectionState } from "./lib/connection-state.js?v=91";
+} from "./lib/format.js?v=92";
+import { assistantReplyGroups, conversationTurnStatus, conversationTurns, mapResultsToTurns } from "./lib/conversation.js?v=92";
+import { commandStateView, compareTaskUrgency, inboxOverview, resultView, taskNeedsAttention } from "./lib/task-view.js?v=92";
+import { createSessionSnapshot, parseSessionSnapshot } from "./lib/session-snapshot.js?v=92";
+import { createConnectionState, isStreamHealthy as isConnectionStreamHealthy, reduceConnectionState } from "./lib/connection-state.js?v=92";
 
 function storedCompletionKeys() {
   try {
@@ -2110,6 +2110,7 @@ function approvalPanel(session) {
         <button class="deny" type="button" data-decision="deny">拒绝</button>
         <button class="allow" type="button" data-decision="allow">仅允许这一次</button>
       </div>
+      <p class="approval-status" data-approval-status role="status" aria-live="polite"></p>
     </section>`;
 }
 
@@ -2903,8 +2904,13 @@ async function interruptTurn(button) {
   }
 }
 
-async function decideApproval(id, decision, sessionId = null, turnId = null) {
-  if (decision === "allow" && !window.confirm("只允许当前页面显示的这一次操作？")) return;
+async function decideApproval(id, decision, sessionId = null, turnId = null, button = null) {
+  const panel = button?.closest?.("[data-approval-id]");
+  const status = panel?.querySelector("[data-approval-status]");
+  const buttons = panel ? [...panel.querySelectorAll("button[data-decision]")] : [];
+  if (buttons.some((candidate) => candidate.disabled)) return;
+  for (const candidate of buttons) candidate.disabled = true;
+  if (status) status.textContent = "正在送达 Codex…";
   try {
     await request(`/api/approvals/${encodeURIComponent(id)}/decision`, {
       method: "POST",
@@ -2912,10 +2918,13 @@ async function decideApproval(id, decision, sessionId = null, turnId = null) {
       body: JSON.stringify({ decision, sessionId, turnId }),
     });
     toast(decision === "allow" ? "已允许本次操作" : "已拒绝本次操作");
+    if (status) status.textContent = decision === "allow" ? "已允许本次操作" : "已拒绝本次操作";
     await refreshSessions();
-    const sessionId = elements.detail.dataset.sessionId;
-    if (sessionId) await showDetails(sessionId, { open: false });
+    const currentSessionId = elements.detail.dataset.sessionId;
+    if (currentSessionId) await showDetails(currentSessionId, { open: false });
   } catch (error) {
+    for (const candidate of buttons) candidate.disabled = false;
+    if (status) status.textContent = `发送失败：${error.message}`;
     toast(error.message);
   }
 }
@@ -3670,6 +3679,15 @@ elements.list.addEventListener("toggle", (event) => {
 }, true);
 
 elements.detailClose.addEventListener("click", () => elements.detail.close());
+elements.detailActions.addEventListener("click", (event) => {
+  const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+  const decision = target?.closest?.("button[data-decision]");
+  const panel = decision?.closest?.("[data-approval-id]");
+  if (!decision || !panel) return;
+  event.preventDefault();
+  event.stopPropagation();
+  void decideApproval(panel.dataset.approvalId, decision.dataset.decision, panel.dataset.sessionId || null, panel.dataset.turnId || null, decision);
+});
 elements.detail.addEventListener("close", () => {
   const sessionId = elements.detail.dataset.sessionId;
   elements.detailContent.querySelector(".technical-details")?.removeAttribute("open");
@@ -3880,9 +3898,6 @@ elements.detail.addEventListener("click", (event) => {
     });
     return;
   }
-  const decision = event.target.closest("button[data-decision]");
-  const panel = decision?.closest("[data-approval-id]");
-  if (decision && panel) void decideApproval(panel.dataset.approvalId, decision.dataset.decision, panel.dataset.sessionId || null, panel.dataset.turnId || null);
 });
 elements.detail.addEventListener("toggle", (event) => {
   const details = event.target;

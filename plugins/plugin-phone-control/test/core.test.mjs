@@ -73,6 +73,35 @@ export const tests = [
     },
   },
   {
+    name: "keeps an actionable approval visible through concurrent activity until resolution",
+    run() {
+      const store = new SessionStore();
+      store.ingest({ eventId: "approval-turn", sessionId: "approval-state", turnId: "turn-main", kind: "turn_start", at: "2026-08-23T12:00:00Z" });
+      store.ingest({
+        eventId: "approval-live",
+        sessionId: "approval-state",
+        turnId: "turn-main",
+        kind: "permission_request",
+        at: "2026-08-23T12:00:01Z",
+        reason: "Needs network access",
+        approval: { id: "approval-1", expiresAt: "2026-08-23T12:10:00Z" },
+      });
+
+      store.ingest({ eventId: "parallel-tool", sessionId: "approval-state", turnId: "turn-subagent", kind: "tool_start", at: "2026-08-23T12:00:02Z", tool: { name: "exec" } });
+      store.ingest({ eventId: "parallel-complete", sessionId: "approval-state", turnId: "turn-subagent", kind: "turn_complete", at: "2026-08-23T12:00:03Z" });
+      const pending = store.get("approval-state");
+      assert.equal(pending.status, "waiting");
+      assert.equal(pending.pendingApproval.id, "approval-1");
+      assert.equal(pending.control.canApprove, true);
+
+      store.ingest({ eventId: "approval-decided", sessionId: "approval-state", turnId: "turn-main", kind: "approval_resolved", decision: "allow", at: "2026-08-23T12:00:04Z" });
+      const resolved = store.get("approval-state");
+      assert.equal(resolved.status, "working");
+      assert.equal(resolved.pendingApproval, null);
+      assert.equal(resolved.control.canApprove, false);
+    },
+  },
+  {
     name: "exposes minimal turn provenance for cross-stream conversation merging",
     run() {
       const store = new SessionStore();

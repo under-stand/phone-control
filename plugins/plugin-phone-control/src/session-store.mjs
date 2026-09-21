@@ -18,6 +18,14 @@ const LOW_VALUE_EVENT_KINDS = new Set(["tool_end", "working", "activity", "subag
 const SAME_TURN_POST_COMPLETION_NOISE = new Set(["working", "activity", "tool_start", "tool_end", "assistant_message", "subagent_start", "subagent_stop", "phone_interrupt_sent"]);
 const OUT_OF_ORDER_SENSITIVE_KINDS = new Set([...SAME_TURN_POST_COMPLETION_NOISE, "session_start", "user_prompt", "turn_start"]);
 const MESSAGE_EVENT_KINDS = new Set(["user_prompt", "assistant_message"]);
+const INTERACTION_STATE_EVENT_KINDS = new Set([
+  "permission_request",
+  "question",
+  "approval_resolved",
+  "approval_expired",
+  "question_answered",
+  "question_unavailable",
+]);
 
 function semanticMessageKey(event) {
   if (event?.source !== "rollout" || !MESSAGE_EVENT_KINDS.has(event.kind) || !event.message?.text) return null;
@@ -344,6 +352,20 @@ function applyEvent(session, event) {
     }
   }
   if (staleState || finalizedSameTurn) return;
+
+  // Hooks, rollout replay, and the App Server can report parallel tool or
+  // subagent activity while one approval or question is still awaiting the
+  // phone. Keep that single-use interaction authoritative until its broker
+  // emits an explicit resolved, expired, or unavailable event.
+  const pendingInteraction = session.pendingApproval?.id && session.pendingApproval.canRespond
+    ? session.pendingApproval
+    : null;
+  const completesPendingTurn = pendingInteraction
+    && TERMINAL_TASK_EVENT_KINDS.has(event.kind)
+    && (!pendingInteraction.turnId || !event.turnId || pendingInteraction.turnId === event.turnId);
+  if (pendingInteraction
+    && !INTERACTION_STATE_EVENT_KINDS.has(event.kind)
+    && !completesPendingTurn) return;
 
   switch (event.kind) {
     case "session_metadata":
