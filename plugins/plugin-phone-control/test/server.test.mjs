@@ -6,6 +6,7 @@ import { access, mkdtemp, rm } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { gunzipSync } from "node:zlib";
 import { createPhoneControlServer } from "../src/server.mjs";
+import { PHONE_CONTROL_ASSET_VERSION } from "../src/version.mjs";
 
 class TestAppServerBridge extends EventEmitter {
   constructor() {
@@ -332,6 +333,92 @@ function request({ port, pathname, method = "GET", headers = {}, body = null }) 
 
 export const tests = [
   {
+    name: "HTTP CLI continuation queues on the original thread, isolates devices and supports cancellation",
+    async run() {
+      const dataDir = await mkdtemp(path.join(os.tmpdir(), "phone-cli-api-"));
+      const bridge = new TestAppServerBridge();
+      const status = bridge.status.bind(bridge);
+      bridge.status = () => ({ ...status(), server: { userAgent: "codex/0.154.0" } });
+      let queued = [], adds = 0;
+      bridge.request = async (method, params) => {
+        if (method === "thread/queue/add") {
+          adds++;
+          queued.push({ ...params, id: "queued-api" });
+          return { queuedSubmission: queued[0] };
+        }
+        if (method === "thread/queue/list") return { data: queued };
+        if (method === "thread/turns/list") return { data: [] };
+        if (method === "thread/queue/delete") { queued = []; return { deleted: true }; }
+        assert.fail(`Unexpected writer operation ${method}`);
+      };
+      const runtime = await createPhoneControlServer({ config: { host: "127.0.0.1", port: 0, token: "test-token", dataDir }, scanRollouts: false, appServerBridge: bridge });
+      try {
+        const { port } = await runtime.start();
+        const login = await request({ port, pathname: "/?token=test-token" });
+        const headers = { cookie: login.headers["set-cookie"][0].split(";", 1)[0], "x-phone-control-client": "1" };
+        runtime.store.ingest({ eventId: "cli-api-prompt", sessionId: "thread-cli", surface: "CLI", transcriptPath: "/synthetic/rollout.jsonl", kind: "user_prompt", at: new Date().toISOString(), message: { role: "user", text: "Original CLI task" } });
+        const detail = await request({ port, pathname: "/api/sessions/thread-cli", headers });
+        assert.equal(detail.body.session.cliContinuation.available, true);
+        const submit = { port, pathname: "/api/sessions/thread-cli/cli-input", method: "POST", headers, body: { clientMessageId: "api-cli-0001", text: "Continue in CLI" } };
+        const receipt = await request(submit);
+        assert.equal(receipt.status, 202);
+        assert.equal(receipt.body.queued.status, "cli_queued");
+        await request(submit);
+        assert.equal(adds, 1);
+        const projected = await request({ port, pathname: "/api/sessions/thread-cli", headers });
+        assert.equal(projected.body.session.commandState.label, "已交给原 CLI 排队");
+        const canceled = await request({ port, pathname: `/api/commands/${receipt.body.queued.id}`, method: "DELETE", headers });
+        assert.equal(canceled.body.queued.status, "canceled");
+        const forbidden = await request({ ...submit, headers: { ...headers, origin: "https://untrusted.invalid" } });
+        assert.equal(forbidden.status, 403);
+        bridge.load("thread-cli");
+        const owned = await request({ ...submit, body: { ...submit.body, clientMessageId: "api-cli-0002" } });
+        assert.equal(owned.status, 409);
+        assert.equal(bridge.commands.size, 0);
+      } finally {
+        await runtime.close();
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: "keeps HTTP queue cancellation after a concurrent failed send and suppresses status-triggered retries",
+    async run() {
+      const dataDir = await mkdtemp(path.join(os.tmpdir(), "phone-outbox-cancel-api-"));
+      const bridge = new TestAppServerBridge();
+      let calls = 0, rejectSend, entered;
+      const sending = new Promise(resolve => { entered = resolve; });
+      bridge.sendInput = async () => {
+        calls++;
+        bridge.emit("status", bridge.status());
+        entered();
+        return new Promise((resolve, reject) => { rejectSend = reject; });
+      };
+      const runtime = await createPhoneControlServer({ config: { host: "127.0.0.1", port: 0, token: "test-token", dataDir, interactions: { enabled: true } }, scanRollouts: false, appServerBridge: bridge });
+      try {
+        const { port } = await runtime.start();
+        const login = await request({ port, pathname: "/?token=test-token" });
+        const headers = { cookie: login.headers["set-cookie"][0].split(";", 1)[0], "x-phone-control-client": "1" };
+        runtime.store.ingest({ eventId: "cancel-api-prompt", sessionId: "thread-cancel", surface: "Phone", kind: "user_prompt", at: new Date().toISOString(), message: { role: "user", text: "Check cancellation" } });
+        bridge.load("thread-cancel");
+        await request({ port, pathname: "/api/sessions/thread-cancel/queue", method: "POST", headers, body: { text: "Continue", clientMessageId: "cancel-api-0001" } });
+        await sending;
+        const canceled = await request({ port, pathname: "/api/commands/cancel-api-0001", method: "DELETE", headers });
+        assert.equal(canceled.body.queued.status, "canceled");
+        rejectSend(Object.assign(new Error("Could not resume: active writer"), { statusCode: 409, delivery: "not_delivered" }));
+        for (let i = 0; i < 10; i++) { bridge.emit("status", bridge.status()); await new Promise(resolve => setTimeout(resolve, 5)); }
+        const after = await request({ port, pathname: "/api/sessions/thread-cancel/queued-commands", headers });
+        assert.equal(after.body.queued[0].status, "canceled");
+        assert.equal(after.body.queued[0].deliveryUnknown, false);
+        assert.equal(calls, 1);
+      } finally {
+        rejectSend?.(Object.assign(new Error("Test ended"), { delivery: "not_delivered" }));
+        await runtime.close();
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
     name: "serves health and the persisted snapshot while the first rollout scan is still running",
     async run() {
       const dataDir = await mkdtemp(path.join(os.tmpdir(), "phone-control-startup-test-"));
@@ -426,13 +513,13 @@ export const tests = [
         const page = await request({ port: started.port, pathname: "/" });
         assert.equal(page.status, 200);
         assert.match(page.headers["content-security-policy"], /default-src 'self'/);
-        assert.match(page.body, /app\.js\?v=93/);
+        assert.ok(page.body.includes(`/app.js?v=${PHONE_CONTROL_ASSET_VERSION}`));
         assert.match(page.body, /id="task-title">任务</);
         assert.doesNotMatch(page.body, /id="metrics"|任务概览|会话列表/);
 
         const compressedAsset = await request({
           port: started.port,
-          pathname: "/app.js?v=93",
+          pathname: `/app.js?v=${PHONE_CONTROL_ASSET_VERSION}`,
           headers: { "accept-encoding": "gzip" },
         });
         assert.equal(compressedAsset.status, 200);
@@ -771,6 +858,10 @@ export const tests = [
         const pending = await request({ port: started.port, pathname: "/api/sessions/session-approval", headers: { cookie } });
         assert.equal(pending.body.session.pendingApproval.id, approvalId);
         assert.equal(pending.body.session.control.canApprove, true);
+        const unauthenticatedApproval = await request({ port: started.port, pathname: `/api/approvals/${approvalId}` });
+        assert.equal(unauthenticatedApproval.status, 401);
+        const approvalStatus = await request({ port: started.port, pathname: `/api/approvals/${approvalId}`, headers: { cookie } });
+        assert.equal(approvalStatus.body.approval.status, "pending");
 
         const decided = await request({
           port: started.port,
@@ -781,6 +872,8 @@ export const tests = [
         });
         assert.equal(decided.status, 200);
         assert.equal(decided.body.approval.status, "allowed");
+        const resolvedStatus = await request({ port: started.port, pathname: `/api/approvals/${approvalId}`, headers: { cookie } });
+        assert.equal(resolvedStatus.body.approval.status, "allowed");
         const waited = await request({
           port: started.port,
           pathname: `/api/internal/approvals/${encodeURIComponent(approvalId)}`,

@@ -22,7 +22,10 @@ import { BrowserControlLeaseStore } from "./browser-control-lease.mjs";
 import { BrowserExtensionBroker } from "./browser-extension-broker.mjs";
 import { CompletionPolicy } from "./completion-policy.mjs";
 import { CommandOutbox } from "./command-outbox.mjs";
-import { deriveCommandState } from "./command-state.mjs";
+import { CliSessionQueue } from "./cli-session-queue.mjs";
+import { canAttemptDelivery, deliverOutboxEntry } from "./outbox-delivery.mjs";
+import { projectSession } from "./session-projection.mjs";
+import { SessionInputService } from "./session-input-service.mjs";
 import { permissionProfileFromContext } from "./codex-permissions.mjs";
 import { DeviceStore } from "./device-store.mjs";
 import { ImageStore, MAX_IMAGE_BYTES } from "./image-store.mjs";
@@ -33,7 +36,6 @@ import { inspectCodexRuntime } from "./runtime-diagnostics.mjs";
 import { nodeRuntimeStatus } from "./service-diagnostics.mjs";
 import { SessionStore } from "./session-store.mjs";
 import { TaskTitleGenerator } from "./task-title-generator.mjs";
-import { deriveTaskInbox } from "./task-inbox.mjs";
 import { drainSpool } from "./spool.mjs";
 import { PHONE_CONTROL_VERSION } from "./version.mjs";
 
@@ -274,7 +276,10 @@ export async function createPhoneControlServer({
       turnId: approval.turnId,
       at: approval.decidedAt || new Date().toISOString(),
       kind: approval.status === "expired" ? "approval_expired" : "approval_resolved",
+      approvalId: approval.id,
+      approval: { id: approval.id },
       decision: approval.decision,
+      reason: approval.status === "expired" ? "审批已过期" : null,
     });
   });
 
@@ -282,6 +287,7 @@ export async function createPhoneControlServer({
     ? config.interactions?.enabled
       ? new CodexAppServerBridge({
         auditLogPath: paths.auditLog,
+        commandJournalPath: path.join(paths.root, "direct-commands.json"),
         socketPath: path.join(codexHome, "app-server-control", "app-server-control.sock"),
         codexCommand: config.codexCommand,
         transportMode: config.interactions.transport,
@@ -350,6 +356,8 @@ export async function createPhoneControlServer({
         turnId: approval.turnId,
         at: approval.decidedAt || new Date().toISOString(),
         kind: "approval_resolved",
+        approvalId: approval.id,
+        approval: { id: approval.id },
         decision: approval.decision,
       }, { persist: false });
     });
@@ -362,6 +370,8 @@ export async function createPhoneControlServer({
         turnId: approval.turnId,
         at: approval.decidedAt || new Date().toISOString(),
         kind: "approval_expired",
+        approvalId: approval.id,
+        approval: { id: approval.id },
         reason: approval.unavailableReason || "手机审批通道已失效，请回到原 Codex 客户端处理",
       }, { persist: false });
     });
@@ -374,6 +384,8 @@ export async function createPhoneControlServer({
         turnId: interaction.turnId,
         at: interaction.decidedAt || new Date().toISOString(),
         kind: "question_answered",
+        interactionId: interaction.id,
+        interaction: { id: interaction.id },
         delivery: interaction.delivery,
       }, { persist: false });
     });
@@ -386,6 +398,8 @@ export async function createPhoneControlServer({
         turnId: interaction.turnId,
         at: new Date().toISOString(),
         kind: "question_unavailable",
+        interactionId: interaction.id,
+        interaction: { id: interaction.id },
         delivery: interaction.delivery,
         reason: interaction.unavailableReason || "手机回答通道已失效，请回到原 Codex 客户端处理",
       }, { persist: false });
@@ -455,6 +469,11 @@ export async function createPhoneControlServer({
     });
   }
 
+  const cliQueue = new CliSessionQueue({ bridge, filePath: path.join(paths.root, "cli-commands.json") });
+  await cliQueue.restore();
+  const sessionInput = new SessionInputService({ filePath: path.join(paths.root, "input-requests.json"),
+    store, bridge, images, executionContext: inheritedSessionExecutionContext, rememberPrompt: rememberPhonePrompt });
+  await sessionInput.replay.restore();
   const scanner = rolloutScanner || new RolloutScanner({ sessionsDir: path.join(codexHome, "sessions") });
   scanner.on("event", (event) => store.ingest(event));
   scanner.on("warning", (error) => store.emit("warning", error));
@@ -462,19 +481,13 @@ export async function createPhoneControlServer({
   const sseClients = new Set();
   const browserStreamClients = new Set();
   const visibleSessionIds = new Set(store.list({ taskKind: "user" }).map((session) => session.id));
-  const sessionPayload = (session, deviceId = null) => {
-    const queuedCommands = outbox.list({ sessionId: session.id, deviceId, includeTerminal: false });
-    const commandState = deriveCommandState(session, {
-      queuedCommands: outbox.list({ sessionId: session.id, deviceId, includeTerminal: true }),
-      liveCommands: bridge?.listCommands?.({ sessionId: session.id, deviceId }) || [],
-    });
-    return {
-      ...session,
-      queuedCommands,
-      commandState,
-      inbox: deriveTaskInbox(session, commandState),
-    };
-  };
+  const sessionPayload = (session, deviceId = null) => projectSession(session, {
+    queuedCommands: [...outbox.list({ sessionId: session.id, deviceId, includeTerminal: true }),
+      ...cliQueue.list({ sessionId: session.id, deviceId, includeTerminal: true })],
+    liveCommands: [...(bridge?.listCommands?.({ sessionId: session.id, deviceId }) || []),
+      ...sessionInput.replay.uncertain({ sessionId: session.id, deviceId })],
+    cliContinuation: cliQueue.capability(session),
+  });
   const visibleSessions = (deviceId = null) => store.list({ taskKind: "user" })
     .map((session) => sessionPayload(session, deviceId));
   const queueBrowserFrame = (client, frame) => {
@@ -553,6 +566,7 @@ export async function createPhoneControlServer({
       for (const entry of outbox.pending()) {
         if (processedSessions.has(entry.sessionId)) continue;
         processedSessions.add(entry.sessionId);
+        if (!canAttemptDelivery(entry)) continue;
         const session = store.get(entry.sessionId);
         if (!session || session.taskKind !== "user") {
           await outbox.update(entry.id, { status: "failed", waitingFor: null, lastError: "The target session no longer exists" });
@@ -625,14 +639,7 @@ export async function createPhoneControlServer({
           continue;
         }
         const inherited = inheritedSessionExecutionContext(session);
-        await outbox.update(entry.id, {
-          status: "sending",
-          waitingFor: null,
-          attempts: entry.attempts + 1,
-          lastError: null,
-        });
-        try {
-          const command = await bridge.sendInput({
+        await deliverOutboxEntry({ outbox, entry, bridge, onDelivered: rememberPhonePrompt, input: {
             sessionId: entry.sessionId,
             expectedTurnId: entry.expectedTurnId,
             text: entry.text,
@@ -643,28 +650,7 @@ export async function createPhoneControlServer({
             confirmDangerFullAccess: entry.confirmDangerFullAccess,
             cwd: entry.cwd || inherited.cwd,
             clientMessageId: entry.id,
-          }, { id: entry.deviceId, name: "Queued phone" });
-          rememberPhonePrompt(command, entry.text);
-          await outbox.update(entry.id, {
-            status: "delivered",
-            waitingFor: null,
-            deliveredAt: command.deliveredAt || new Date().toISOString(),
-            deliveredCommand: command,
-            lastError: null,
-          });
-        } catch (error) {
-          const message = String(error?.message || "Instruction delivery failed");
-          const transient = error?.statusCode !== 404 && (error?.statusCode === 503
-            || /unavailable|not ready|not attached|handed off|desktop|transport|connection|resume|active turn|question|approval/i.test(message));
-          const mismatch = Boolean(entry.expectedTurnId) && /session is now idle|turn changed|unexpected turn|active turn/i.test(message);
-          if (mismatch) {
-            await outbox.update(entry.id, { status: "needs_review", waitingFor: null, lastError: "The Codex turn changed while this instruction was waiting" });
-          } else if (transient) {
-            await outbox.update(entry.id, { status: "waiting", waitingFor: /desktop|handed off/i.test(message) ? "desktop" : /question/i.test(message) ? "question" : /approval/i.test(message) ? "approval" : "codex", lastError: message.slice(0, 500) });
-          } else {
-            await outbox.update(entry.id, { status: "failed", waitingFor: null, lastError: message.slice(0, 500) });
-          }
-        }
+        } });
       }
     } finally {
       outboxProcessing = false;
@@ -681,7 +667,15 @@ export async function createPhoneControlServer({
       const session = store.getSummary(entry.sessionId);
       if (session?.taskKind === "user") sendSse(client.response, "session", sessionPayload(session, client.deviceId));
     }
-    void processOutbox();
+    if (entry.status === "queued") void processOutbox();
+  });
+  cliQueue.on("change", (entry) => {
+    const session = store.getSummary(entry.sessionId);
+    for (const client of sseClients) {
+      if (client.deviceId !== entry.deviceId) continue;
+      sendSse(client.response, "outbox", entry);
+      if (session?.taskKind === "user") sendSse(client.response, "session", sessionPayload(session, client.deviceId));
+    }
   });
   bridge?.on?.("status", () => void processOutbox());
   bridge?.on?.("loaded", () => void processOutbox());
@@ -1287,6 +1281,13 @@ export async function createPhoneControlServer({
         return;
       }
 
+      if (request.method === "GET" && /^\/api\/approvals\/[^/]+$/.test(url.pathname)) {
+        const id = decodeURIComponent(url.pathname.slice("/api/approvals/".length));
+        const approval = (typeof bridge?.getApproval === "function" ? bridge.getApproval(id) : null) || approvals.get(id);
+        json(response, approval ? 200 : 404, approval ? { approval } : { error: "Approval not found" });
+        return;
+      }
+
       if (request.method === "POST" && url.pathname.startsWith("/api/approvals/") && url.pathname.endsWith("/decision")) {
         if (!isSameOriginWrite(request)) {
           json(response, 403, { error: "Approval decision failed origin checks" });
@@ -1348,6 +1349,24 @@ export async function createPhoneControlServer({
         }, device);
         rememberPhonePrompt(command, body.text);
         json(response, 201, { command });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/cli-input")) {
+        if (!isSameOriginWrite(request)) {
+          json(response, 403, { error: "CLI input failed origin checks" });
+          return;
+        }
+        const id = decodeURIComponent(url.pathname.slice("/api/sessions/".length, -"/cli-input".length));
+        const session = store.get(id);
+        if (!session) { json(response, 404, { error: "Session not found" }); return; }
+        if (!cliQueue.capability(session).available) {
+          json(response, 409, { error: "原 CLI 队列暂不可用，请刷新会话并确认 Codex 连接" });
+          return;
+        }
+        const body = await readJson(request);
+        const queued = await cliQueue.submit({ ...body, sessionId: id, deviceId: device.id });
+        json(response, 202, { queued });
         return;
       }
 
@@ -1434,7 +1453,7 @@ export async function createPhoneControlServer({
           json(response, 404, { error: "Session not found" });
           return;
         }
-        json(response, 200, { queued: outbox.list({ sessionId: id, deviceId: device.id }) });
+        json(response, 200, { queued: [...outbox.list({ sessionId: id, deviceId: device.id }), ...cliQueue.list({ sessionId: id, deviceId: device.id })] });
         return;
       }
 
@@ -1444,12 +1463,13 @@ export async function createPhoneControlServer({
           return;
         }
         const id = decodeURIComponent(url.pathname.slice("/api/commands/".length));
-        const canceled = await outbox.cancel(id, device.id);
+        const nativeCli = cliQueue.entries.has(id);
+        const canceled = nativeCli ? await cliQueue.cancel(id, device.id) : await outbox.cancel(id, device.id);
         if (!canceled) {
           json(response, 404, { error: "Queued command not found" });
           return;
         }
-        json(response, 200, { queued: outbox.public(canceled, { includeText: true }) });
+        json(response, 200, { queued: nativeCli ? canceled : outbox.public(canceled, { includeText: true }) });
         return;
       }
 
@@ -1463,43 +1483,8 @@ export async function createPhoneControlServer({
           return;
         }
         const id = decodeURIComponent(url.pathname.slice("/api/sessions/".length, -"/input".length));
-        const session = store.get(id);
-        if (!session) {
-          json(response, 404, { error: "Session not found" });
-          return;
-        }
-        if (session.pendingApproval || !session.control?.canSend) {
-          json(response, 409, { error: session.control?.reason || "This session cannot accept phone input" });
-          return;
-        }
         const body = await readJson(request);
-        const expectedTurnId = body.expectedTurnId == null ? null : body.expectedTurnId;
-        if (expectedTurnId !== (session.control.expectedTurnId || null)) {
-          json(response, 409, { error: "The Codex turn changed; refresh before sending" });
-          return;
-        }
-        const inherited = expectedTurnId == null ? inheritedSessionExecutionContext(session) : {};
-        const imageRecords = await images.consume(body.imageIds || [], { deviceId: device.id, sessionId: id, expectedTurnId });
-        let command;
-        try {
-          command = await bridge.sendInput({
-            sessionId: id,
-            expectedTurnId,
-            text: body.text,
-            images: imageRecords.map((record) => ({ path: record.path, mime: record.mime })),
-            model: body.model || inherited.model,
-            reasoningEffort: body.reasoningEffort || inherited.reasoningEffort,
-            serviceTier: body.serviceTier || inherited.serviceTier,
-            permissionProfile: body.permissionProfile || inherited.permissionProfile,
-            confirmDangerFullAccess: body.confirmDangerFullAccess,
-            cwd: body.cwd || inherited.cwd,
-            clientMessageId: body.clientMessageId,
-          }, device);
-          rememberPhonePrompt(command, body.text);
-        } catch (error) {
-          await images.discardRecords(imageRecords);
-          throw error;
-        }
+        const command = await sessionInput.send(id, body, device);
         json(response, 200, { command });
         return;
       }
@@ -1827,6 +1812,7 @@ export async function createPhoneControlServer({
   let compactTimer = null;
   let imageCleanupTimer = null;
   let outboxTimer = null;
+  let cliQueueTimer = null;
   async function start() {
     await drainSpool(paths.hookSpool, async (event) => store.ingest(event));
     await new Promise((resolve, reject) => {
@@ -1863,6 +1849,9 @@ export async function createPhoneControlServer({
     outboxTimer = setInterval(() => void processOutbox(), 2_000);
     outboxTimer.unref?.();
     void processOutbox();
+    cliQueueTimer = setInterval(() => void cliQueue.reconcile(), 3_000);
+    cliQueueTimer.unref?.();
+    void cliQueue.reconcile();
     return { port, localUrl: `http://127.0.0.1:${port}`, networkUrls: publicHostUrls(port) };
   }
 
@@ -1874,6 +1863,7 @@ export async function createPhoneControlServer({
     if (compactTimer) clearInterval(compactTimer);
     if (imageCleanupTimer) clearInterval(imageCleanupTimer);
     if (outboxTimer) clearInterval(outboxTimer);
+    if (cliQueueTimer) clearInterval(cliQueueTimer);
     for (const client of sseClients) client.response.end();
     sseClients.clear();
     for (const client of browserStreamClients) client.response.end();
@@ -1884,6 +1874,8 @@ export async function createPhoneControlServer({
     await devices.flush();
     await push.flush();
     await outbox.flush();
+    await cliQueue.flush();
+    await sessionInput.replay.flush();
     await images.close();
     await approvals.close();
     browser.close();
@@ -1905,6 +1897,7 @@ export async function createPhoneControlServer({
     browserLeases,
     browserReplay,
     outbox,
+    cliQueue,
     bridge,
     titleGenerator,
     createPairing,

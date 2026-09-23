@@ -7,6 +7,7 @@ import { resolveCodexHome } from "./paths.mjs";
 import { createAppServerTransport } from "./app-server-transport.mjs";
 import { codexPermissionSelection } from "./codex-permissions.mjs";
 import { PHONE_CONTROL_VERSION } from "./version.mjs";
+import { CommandReplay } from "./command-replay.mjs";
 
 // Match the official remote App Server client's bounded message envelope. The
 // bridge still avoids large history responses by using metadata-only resume.
@@ -422,6 +423,7 @@ export class CodexAppServerBridge extends EventEmitter {
     shouldAutoResumeLoadedThread = null,
     reconnect = true,
     auditLogPath = null,
+    commandJournalPath = null,
   } = {}) {
     super();
     this.socketPath = socketPath;
@@ -453,6 +455,7 @@ export class CodexAppServerBridge extends EventEmitter {
     this.handedOffThreads = new Map();
     this.threadStates = new Map();
     this.commands = new Map();
+    this.commandReplay = new CommandReplay({ filePath: commandJournalPath });
     this.interruptRequests = new Map();
     this.connected = false;
     this.initialized = false;
@@ -544,6 +547,7 @@ export class CodexAppServerBridge extends EventEmitter {
   }
 
   async start() {
+    await this.commandReplay.restore();
     this.stopped = false;
     return this.connect();
   }
@@ -745,6 +749,13 @@ export class CodexAppServerBridge extends EventEmitter {
       for (const command of this.commands.values()) {
         if (command.sessionId !== threadId || !turnId || command.turnId !== turnId) continue;
         command.phoneOwnershipEndedAt = new Date().toISOString();
+        command.completedAt = command.completedAt || new Date().toISOString();
+        const turnStatus = message.params?.turn?.status;
+        command.outcome = turnStatus === "failed"
+          ? "error"
+          : turnStatus === "interrupted"
+            ? "aborted"
+            : "completed";
       }
       for (const interaction of this.interactions.values()) {
         if (interaction.status !== "pending" || interaction.sessionId !== threadId) continue;
@@ -1294,7 +1305,7 @@ export class CodexAppServerBridge extends EventEmitter {
   }
 
   listCommands({ sessionId = null, deviceId = null } = {}) {
-    return Array.from(this.commands.values())
+    return [...this.commandReplay.uncertain({ sessionId, deviceId }).filter((entry) => !this.commands.has(entry.id)), ...this.commands.values()]
       .filter((command) => (!sessionId || command.sessionId === sessionId)
         && (!deviceId || !command.decidedBy || command.decidedBy === deviceId))
       .map((command) => JSON.parse(JSON.stringify(command)))
@@ -1311,7 +1322,18 @@ export class CodexAppServerBridge extends EventEmitter {
     }
   }
 
-  async createSession({ text, context = null, branchOf = null, cwd = null, model = null, reasoningEffort = null, serviceTier = null, permissionProfile = null, confirmDangerFullAccess = false, clientMessageId } = {}, device = null) {
+  createSession(input = {}, device = null) {
+    return this.commandReplay.execute(input, device, "create", async () => {
+      try { return await this.createSessionNow(input, device); }
+      catch (error) {
+        const command = this.commands.get(input.clientMessageId);
+        error.delivery = !command || command.delivery === "not_delivered" ? "not_delivered" : "unknown";
+        throw error;
+      }
+    });
+  }
+
+  async createSessionNow({ text, context = null, branchOf = null, cwd = null, model = null, reasoningEffort = null, serviceTier = null, permissionProfile = null, confirmDangerFullAccess = false, clientMessageId } = {}, device = null) {
     const input = normalizePhoneInput(text);
     const branchContext = normalizeBranchContext(context);
     const branchSource = branchOf == null || branchOf === "" ? null : clampText(branchOf, 240);
@@ -1665,7 +1687,23 @@ export class CodexAppServerBridge extends EventEmitter {
     }
   }
 
-  async sendInput({ sessionId, expectedTurnId = null, text, images = [], cwd = null, model = null, reasoningEffort = null, serviceTier = null, permissionProfile = null, confirmDangerFullAccess = false, clientMessageId } = {}, device = null) {
+  async sendInput(input = {}, device = null) {
+    return this.commandReplay.execute(input, device, "direct", () => this.deliverInput(input, device));
+  }
+
+  async deliverInput(input, device) {
+    try {
+      return await this.sendInputNow(input, device);
+    } catch (error) {
+      const command = this.commands.get(input.clientMessageId);
+      error.delivery = command?.delivery === "not_delivered" || !command ? "not_delivered" : "unknown";
+      if (command) error.retryable = false;
+      throw error;
+    }
+  }
+
+  async sendInputNow({ sessionId, expectedTurnId = null, text, images = [], cwd = null, model = null, reasoningEffort = null, serviceTier = null, permissionProfile = null, confirmDangerFullAccess = false, clientMessageId, isCanceled = () => false } = {}, device = null) {
+    if (isCanceled()) throw httpError("Canceled before delivery", 409);
     const threadId = typeof sessionId === "string" ? sessionId.trim() : "";
     if (!threadId || threadId.length > 200) throw httpError("A valid session id is required", 400);
     const input = normalizePhoneInput(text, images);
@@ -1709,6 +1747,8 @@ export class CodexAppServerBridge extends EventEmitter {
     const permissions = action === "start"
       ? codexPermissionSelection(permissionProfile, workingDirectory, confirmDangerFullAccess)
       : null;
+
+    if (isCanceled()) throw httpError("Canceled before delivery", 409);
 
     const command = {
       id: commandId,
@@ -1988,6 +2028,10 @@ export class CodexAppServerBridge extends EventEmitter {
   clearApprovalWaitingFlag(sessionId) {
     const state = this.threadStates.get(sessionId);
     if (!state?.activeFlags?.includes("waitingOnApproval")) return;
+    const anotherApprovalPending = Array.from(this.nativeApprovals.values()).some((approval) => (
+      approval.sessionId === sessionId && ["pending", "sending"].includes(approval.status)
+    ));
+    if (anotherApprovalPending) return;
     this.setThreadState(sessionId, {
       activeFlags: state.activeFlags.filter((flag) => flag !== "waitingOnApproval"),
     });
@@ -2182,6 +2226,7 @@ export class CodexAppServerBridge extends EventEmitter {
   }
 
   async close() {
+    await this.commandReplay.flush();
     this.stopped = true;
     clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;

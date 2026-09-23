@@ -18,6 +18,7 @@
     "smoke:performance": "node ./scripts/smoke-performance.mjs",
     "smoke:question": "node ./scripts/smoke-question.mjs",
     "smoke:control": "node ./scripts/smoke-control.mjs",
+    "smoke:cli": "node ./scripts/smoke-cli-continuation.mjs",
     "check": "node ./scripts/check-source.mjs",
     "test": "node ./scripts/run-tests.mjs",
     "test:mobile": "node ./scripts/mobile-regression.mjs",

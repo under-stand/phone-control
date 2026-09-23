@@ -29,6 +29,19 @@ try {
     if (!schema.properties?.approvalPolicy) throw new Error(`${name} no longer exposes approvalPolicy`);
   }
   process.stdout.write(`Codex App Server schema accepts approvalPolicy ${JSON.stringify(emittedPolicy)} for thread/start and turn/start.\n`);
+  for (const [name, fields] of [
+    ["ThreadQueueAddParams", ["threadId", "clientUserMessageId", "input"]],
+    ["ThreadQueueListParams", ["threadId", "limit", "cursor"]],
+    ["ThreadQueueDeleteParams", ["threadId", "queuedSubmissionId"]],
+    ["ThreadTurnsListParams", ["threadId", "limit", "sortDirection", "itemsView"]],
+  ]) {
+    const schema = JSON.parse(await readFile(path.join(output, "v2", `${name}.json`), "utf8"));
+    for (const field of fields) if (!schema.properties?.[field]) throw new Error(`${name} no longer exposes ${field}`);
+  }
+  const history = JSON.parse(await readFile(path.join(output, "v2", "ThreadTurnsListResponse.json"), "utf8"));
+  const userMessage = history.definitions?.ThreadItem?.oneOf?.find((item) => item.properties?.type?.enum?.includes("userMessage"));
+  if (!userMessage?.properties?.clientId) throw new Error("User message receipt no longer exposes clientId");
+  process.stdout.write("Codex App Server schema exposes native CLI queue operations and correlated user-message receipts.\n");
 } finally {
   await rm(output, { recursive: true, force: true });
 }

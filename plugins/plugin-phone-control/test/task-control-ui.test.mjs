@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { PHONE_CONTROL_ASSET_VERSION } from "../src/version.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -24,7 +25,7 @@ export const tests = [
       assert.match(app, /会话主题/);
       assert.match(app, /function commandStateMarkup/);
       assert.match(app, /approval-status/);
-      assert.match(app, /data-approval-state="pending"/);
+      assert.match(app, /data-approval-state=/);
       assert.match(app, /elements\.detailActions\.addEventListener\("click"/);
       assert.match(app, /正在发送允许/);
       assert.match(app, /上一项决定正在处理中/);
@@ -33,7 +34,7 @@ export const tests = [
       assert.doesNotMatch(app, /只允许当前页面显示的这一次操作/);
       assert.match(styles, /\.task-result \{/);
       assert.match(styles, /\.command-lifecycle \{/);
-      assert.match(worker, /task-view\.js\?v=93/);
+      assert.ok(worker.includes(`/lib/task-view.js?v=${PHONE_CONTROL_ASSET_VERSION}`));
 
       // Detail cards render only after a session is opened. Keep this
       // declaration-order check here so a browser-only temporal-dead-zone

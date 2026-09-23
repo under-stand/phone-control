@@ -6,6 +6,33 @@ import { RolloutScanner } from "../src/rollout-scanner.mjs";
 
 export const tests = [
   {
+    name: "drops execution turn context across bounded rollout scan gaps",
+    async run() {
+      const root = await mkdtemp(path.join(os.tmpdir(), "phone-control-scanner-gap-"));
+      const rollout = path.join(root, "rollout-gap.jsonl");
+      const line = (type, payload) => JSON.stringify({ timestamp: "2026-08-23T12:00:00Z", type, payload });
+      const filler = `${line("ignored", { padding: "x".repeat(1024) })}\n`.repeat(2200);
+      const message = (text) => line("response_item", { type: "message", role: "assistant", content: [{ type: "output_text", text }], internal_chat_message_metadata_passthrough: { turn_id: "model-request" } });
+      await writeFile(rollout, `${line("session_meta", { id: "thread-gap", source: "cli" })}\n${line("event_msg", { type: "task_started", turn_id: "turn-header" })}\n${filler}${message("Initial tail")}\n`);
+      const scanner = new RolloutScanner({ sessionsDir: root });
+      const events = [];
+      scanner.on("event", event => events.push(event));
+      try {
+        await scanner.scanOnce();
+        assert.equal(events.at(-1).turnId, null);
+        await appendFile(rollout, `${line("turn_context", { turn_id: "turn-live" })}\n${message("Live tail")}\n`);
+        await scanner.scanOnce();
+        assert.equal(events.at(-1).turnId, "turn-live");
+        await appendFile(rollout, `${filler}${message("After overflow")}\n`);
+        await scanner.scanOnce();
+        assert.equal(events.at(-1).turnId, null);
+      } finally {
+        scanner.stop();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  },
+  {
     name: "discovers a rollout and tails only newly appended records",
     async run() {
       const root = await mkdtemp(path.join(os.tmpdir(), "phone-control-scanner-"));

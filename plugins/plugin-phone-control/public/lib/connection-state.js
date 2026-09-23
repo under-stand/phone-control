@@ -20,6 +20,7 @@ const DEFAULT_STATE = Object.freeze({
   transport: "none",
   attempt: 0,
   lastStreamEventAt: 0,
+  hasStreamSnapshot: false,
   lastSyncAt: 0,
   lastTransitionAt: 0,
   lastError: null,
@@ -58,18 +59,21 @@ export function reduceConnectionState(previous, event = {}, { now = Date.now(), 
     case "manual_reconnect":
       next.phase = "connecting";
       next.transport = "none";
+      next.hasStreamSnapshot = false;
       next.attempt = current.attempt + 1;
       next.lastStreamEventAt = now;
       next.lastError = null;
       next.backgroundedAt = 0;
       break;
     case "stream_open":
+      next.hasStreamSnapshot = false;
       next.phase = "connecting";
       next.transport = "sse";
       next.lastStreamEventAt = now;
       next.lastError = null;
       break;
     case "stream_snapshot":
+      next.hasStreamSnapshot = true;
       next.phase = "online";
       next.transport = "sse";
       next.lastStreamEventAt = now;
@@ -80,8 +84,12 @@ export function reduceConnectionState(previous, event = {}, { now = Date.now(), 
     case "stream_activity":
       next.lastStreamEventAt = now;
       next.lastSyncAt = now;
-      if (current.phase !== "paused" && current.transport === "sse" && current.phase !== "online") {
-        next.phase = "connecting";
+      if (current.phase !== "paused" && current.transport === "sse" && current.hasStreamSnapshot) {
+        // Once an SSE snapshot has established the live projection, a later
+        // stream event must not downgrade it merely because an unrelated HTTP
+        // refresh failed. Keep the authoritative live channel online.
+        next.phase = "online";
+        next.lastError = null;
       }
       break;
     case "http_sync_ok":
@@ -102,7 +110,11 @@ export function reduceConnectionState(previous, event = {}, { now = Date.now(), 
     }
     case "http_sync_error":
       next.lastError = event.error ? String(event.error).slice(0, 300) : null;
-      if (current.phase !== "paused") next.phase = "connecting";
+      // HTTP is a fallback/snapshot channel. Its failure is not evidence that
+      // a healthy SSE stream has gone offline.
+      if (current.phase !== "paused" && !isStreamHealthy(current, { now })) {
+        next.phase = "connecting";
+      }
       break;
     case "background":
       next.phase = "paused";

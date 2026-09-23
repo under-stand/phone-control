@@ -49,6 +49,20 @@ export const tests = [
     },
   },
   {
+    name: "does not derive an old command outcome from a later session turn",
+    run() {
+      const state = deriveCommandState({
+        ...baseSession,
+        status: "error",
+        statusReason: "Later desktop turn failed",
+        turnId: "turn-desktop",
+        lastCompletedTurnId: "turn-desktop",
+      }, { liveCommands: [{ id: "old-phone", status: "delivered", turnId: "turn-phone", phoneOwnershipEndedAt: "2026-09-04T00:00:01Z", sentAt: "2026-09-04T00:00:00Z" }] });
+      assert.equal(state.state, "accepted");
+      assert.match(state.detail, /可靠送达/);
+    },
+  },
+  {
     name: "deduplicates delivered outbox and bridge records by command id",
     run() {
       const state = deriveCommandState(baseSession, {

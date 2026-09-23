@@ -70,3 +70,19 @@ test("expires stale delivery reviews instead of keeping them in the inbox", asyn
 });
 
 export { tests };
+
+test("outbox rejects reuse across session, content and execution settings including after restore", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "phone-command-identity-"));
+  try {
+    const filePath = path.join(directory, "outbox.json");
+    const input = { id: "identity-0001", sessionId: "thread-a", deviceId: "device-a", text: "Continue" };
+    const outbox = new CommandOutbox({ filePath });
+    await outbox.enqueue(input);
+    const restored = new CommandOutbox({ filePath });
+    await restored.restore();
+    assert.equal((await restored.enqueue({ ...input, text: " Continue " })).created, false);
+    for (const changed of [{ sessionId: "thread-b" }, { text: "Other" }, { expectedTurnId: "new-turn" }, { model: "other-model" }, { permissionProfile: "danger-full-access" }]) {
+      await assert.rejects(restored.enqueue({ ...input, ...changed }), (error) => error.code === "command_id_conflict");
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

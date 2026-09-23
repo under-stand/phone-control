@@ -93,8 +93,9 @@ export const tests = [
       assert.equal(pending.status, "waiting");
       assert.equal(pending.pendingApproval.id, "approval-1");
       assert.equal(pending.control.canApprove, true);
+      assert.equal(pending.turnId, "turn-main");
 
-      store.ingest({ eventId: "approval-decided", sessionId: "approval-state", turnId: "turn-main", kind: "approval_resolved", decision: "allow", at: "2026-08-23T12:00:04Z" });
+      store.ingest({ eventId: "approval-decided", sessionId: "approval-state", turnId: "turn-main", approvalId: "approval-1", kind: "approval_resolved", decision: "allow", at: "2026-08-23T12:00:04Z" });
       const resolved = store.get("approval-state");
       assert.equal(resolved.status, "working");
       assert.equal(resolved.pendingApproval, null);
@@ -151,6 +152,49 @@ export const tests = [
       assert.equal(session.status, "working");
       assert.equal(session.pendingApproval, null);
       assert.equal(session.control.canApprove, false);
+    },
+  },
+  {
+    name: "does not let a passive permission observation clear a live approval",
+    run() {
+      const store = new SessionStore();
+      store.ingest({ eventId: "owned-start", sessionId: "approval-owned", turnId: "turn-1", kind: "turn_start", at: "2026-08-23T12:00:00Z" });
+      store.ingest({ eventId: "owned-request", sessionId: "approval-owned", turnId: "turn-1", kind: "permission_request", at: "2026-08-23T12:00:01Z", approval: { id: "approval-owned", expiresAt: "2026-08-23T12:05:00Z" } });
+      store.ingest({ eventId: "owned-observation", sessionId: "approval-owned", turnId: "turn-1", kind: "permission_request", at: "2026-08-23T12:00:02Z" });
+      assert.equal(store.get("approval-owned").pendingApproval.id, "approval-owned");
+      assert.equal(store.get("approval-owned").control.canApprove, true);
+      assert.equal(store.get("approval-owned").status, "waiting");
+    },
+  },
+  {
+    name: "resolves only the matching approval when requests overlap",
+    run() {
+      const store = new SessionStore();
+      store.ingest({ eventId: "overlap-start", sessionId: "approval-overlap", turnId: "turn-1", kind: "turn_start", at: "2026-08-23T12:00:00Z" });
+      for (const id of ["approval-a", "approval-b"]) {
+        store.ingest({ eventId: `${id}-request`, sessionId: "approval-overlap", turnId: "turn-1", kind: "permission_request", at: `2026-08-23T12:00:0${id.endsWith("a") ? 1 : 2}Z`, approval: { id, expiresAt: "2026-08-23T12:05:00Z" } });
+      }
+      store.ingest({ eventId: "approval-a-resolved", sessionId: "approval-overlap", turnId: "turn-1", kind: "approval_resolved", approvalId: "approval-a", decision: "allow", at: "2026-08-23T12:00:03Z" });
+      const session = store.get("approval-overlap");
+      assert.equal(session.pendingApproval.id, "approval-b");
+      assert.equal(session.pendingApprovals.length, 1);
+      assert.equal(session.status, "waiting");
+      store.ingest({ eventId: "unlabelled-resolution", sessionId: "approval-overlap", turnId: "turn-1", kind: "approval_resolved", decision: "deny", at: "2026-08-23T12:00:04Z" });
+      assert.equal(store.get("approval-overlap").pendingApproval.id, "approval-b");
+      assert.equal(store.get("approval-overlap").status, "waiting");
+    },
+  },
+  {
+    name: "ignores a delayed unlabelled terminal event from before the active turn",
+    run() {
+      const store = new SessionStore();
+      store.ingest({ eventId: "new-start", sessionId: "terminal-guard", turnId: "turn-new", kind: "turn_start", at: "2026-08-23T12:01:00Z" });
+      store.ingest({ eventId: "new-approval", sessionId: "terminal-guard", turnId: "turn-new", kind: "permission_request", at: "2026-08-23T12:01:01Z", approval: { id: "approval-new", expiresAt: "2026-08-23T12:05:00Z" } });
+      store.ingest({ eventId: "old-complete", sessionId: "terminal-guard", kind: "turn_complete", at: "2026-08-23T12:00:30Z" });
+      const session = store.get("terminal-guard");
+      assert.equal(session.status, "waiting");
+      assert.equal(session.pendingApproval.id, "approval-new");
+      assert.equal(session.lastCompletedTurnId, null);
     },
   },
   {
@@ -392,6 +436,7 @@ export const tests = [
     run() {
       const context = createRolloutContext("/tmp/rollout-message-phases.jsonl");
       normalizeRolloutRecord({ type: "session_meta", timestamp: "2026-08-23T12:00:00Z", payload: { id: "thread-phases", source: "desktop" } }, context);
+      normalizeRolloutRecord({ type: "event_msg", timestamp: "2026-08-23T12:00:00Z", payload: { type: "task_started", turn_id: "turn-phases" } }, context);
       const commentary = normalizeRolloutRecord({
         type: "response_item",
         timestamp: "2026-08-23T12:00:01Z",
@@ -400,7 +445,7 @@ export const tests = [
           role: "assistant",
           phase: "commentary",
           content: [{ type: "output_text", text: "Working" }],
-          internal_chat_message_metadata_passthrough: { turn_id: "turn-phases" },
+          internal_chat_message_metadata_passthrough: { turn_id: "internal-model-request" },
         },
       }, context)[0];
       const final = normalizeRolloutRecord({

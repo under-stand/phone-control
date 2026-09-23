@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createPhoneControlServer } from "../src/server.mjs";
+import { PHONE_CONTROL_ASSET_VERSION } from "../src/version.mjs";
 
 const EXTENSION_ORIGIN = `chrome-extension://${"a".repeat(32)}`;
 const EXTENSION_HEADERS = {
@@ -103,9 +104,9 @@ export const tests = [{
       const cookie = pairing.headers["set-cookie"][0].split(";")[0];
       const browserPage = await request({ port: started.port, pathname: "/browser.html", headers: { cookie } });
       assert.equal(browserPage.status, 200);
-      assert.match(browserPage.body, /browser\.js\?v=93/);
+      assert.ok(browserPage.body.includes(`/browser.js?v=${PHONE_CONTROL_ASSET_VERSION}`));
       assert.equal(browserPage.headers["cache-control"], "no-cache");
-      const browserAsset = await request({ port: started.port, pathname: "/browser.js?v=93", headers: { cookie } });
+      const browserAsset = await request({ port: started.port, pathname: `/browser.js?v=${PHONE_CONTROL_ASSET_VERSION}`, headers: { cookie } });
       assert.equal(browserAsset.status, 200);
       assert.match(browserAsset.headers["cache-control"], /immutable/);
       const browser = await request({ port: started.port, pathname: "/api/browser", headers: { cookie } });

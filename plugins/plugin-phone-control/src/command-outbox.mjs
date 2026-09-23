@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { commandFingerprint, assertCommandIdentity } from "./command-identity.mjs";
 
 const MAX_ENTRIES = 200;
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60_000;
@@ -86,6 +87,8 @@ function normalizeEntry(raw, now) {
     expiresAt,
     deliveredAt: typeof raw.deliveredAt === "string" ? raw.deliveredAt : null,
     deliveredCommand: raw.deliveredCommand && typeof raw.deliveredCommand === "object" ? raw.deliveredCommand : null,
+    deliveryUnknown: raw.deliveryUnknown === true,
+    nextAttemptAt: cleanOptional(raw.nextAttemptAt, 80),
   };
 }
 
@@ -115,6 +118,14 @@ export class CommandOutbox extends EventEmitter {
     }
     let changed = false;
     for (const entry of this.entries.values()) {
+      if (entry.status === "sending") {
+        entry.status = "needs_review";
+        entry.deliveryUnknown = true;
+        entry.waitingFor = null;
+        entry.lastError = "服务在发送期间重启，无法确认是否送达；已停止自动重试，请先查看会话。";
+        entry.updatedAt = new Date(now).toISOString();
+        changed = true;
+      }
       if (!shouldExpire(entry, now)) continue;
       this.markExpired(entry, now);
       changed = true;
@@ -149,6 +160,8 @@ export class CommandOutbox extends EventEmitter {
       updatedAt: entry.updatedAt,
       expiresAt: entry.expiresAt,
       deliveredAt: entry.deliveredAt,
+      deliveryUnknown: entry.deliveryUnknown === true,
+      nextAttemptAt: entry.nextAttemptAt || null,
       preview: entry.text.length > 140 ? `${entry.text.slice(0, 139)}…` : entry.text,
     };
     if (includeText) copy.text = entry.text;
@@ -197,11 +210,13 @@ export class CommandOutbox extends EventEmitter {
 
   async enqueue({ id, sessionId, deviceId, expectedTurnId = null, text, actionHint = "start", cwd = null, model = null, reasoningEffort = null, serviceTier = null, permissionProfile = null, confirmDangerFullAccess = false } = {}) {
     const commandId = cleanId(id, "client message id");
+    const identity = { sessionId: cleanSessionId(sessionId), deviceId: cleanOptional(deviceId, 200),
+      text: cleanText(text), expectedTurnId: cleanOptional(expectedTurnId, 200), actionHint,
+      cwd: cleanOptional(cwd), model: cleanOptional(model, 160), reasoningEffort: cleanOptional(reasoningEffort, 80),
+      serviceTier: cleanOptional(serviceTier, 80), permissionProfile: cleanOptional(permissionProfile, 80), confirmDangerFullAccess };
     const existing = this.entries.get(commandId);
     if (existing) {
-      if (deviceId && existing.deviceId && deviceId !== existing.deviceId) {
-        throw Object.assign(new Error("This queued command belongs to another device"), { statusCode: 409 });
-      }
+      assertCommandIdentity(commandFingerprint(existing, { channel: "outbox" }), commandFingerprint(identity, { channel: "outbox" }));
       return { entry: clone(existing), created: false };
     }
     if (this.entries.size >= this.maxEntries) {
@@ -244,9 +259,12 @@ export class CommandOutbox extends EventEmitter {
     return { entry: clone(entry), created: true };
   }
 
-  async update(id, patch = {}) {
+  async update(id, patch = {}, { settleAttempt = null } = {}) {
     const entry = this.entries.get(id);
     if (!entry) return null;
+    if (settleAttempt != null && entry.attempts !== settleAttempt) return null;
+    if (TERMINAL_STATUSES.has(entry.status)
+      && !(settleAttempt != null && entry.status === "canceled" && ["delivered", "canceled"].includes(patch.status))) return clone(entry);
     Object.assign(entry, patch, { updatedAt: new Date(this.now()).toISOString() });
     await this.persist();
     this.emit("change", clone(entry));
@@ -256,28 +274,34 @@ export class CommandOutbox extends EventEmitter {
   async cancel(id, deviceId = null) {
     const entry = this.entries.get(id);
     if (!entry || (deviceId && entry.deviceId !== deviceId)) return null;
-    if (TERMINAL_STATUSES.has(entry.status)) return clone(entry);
+    if (TERMINAL_STATUSES.has(entry.status) && entry.status !== "needs_review") return clone(entry);
+    entry.deliveryUnknown = entry.deliveryUnknown === true || ["sending", "needs_review"].includes(entry.status);
     entry.status = "canceled";
     entry.waitingFor = null;
-    entry.lastError = "Canceled from phone";
+    entry.lastError = entry.deliveryUnknown
+      ? "已停止自动重试；此前是否送达尚不确定，请先查看会话。取消队列不会中断已开始的执行。"
+      : "Canceled from phone";
     entry.updatedAt = new Date(this.now()).toISOString();
     await this.persist();
     this.emit("change", clone(entry));
     return clone(entry);
   }
 
-  async persist() {
-    await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 });
-    const temporary = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;
-    const body = { version: 1, entries: Array.from(this.entries.values()) };
-    await writeFile(temporary, `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 });
-    await rename(temporary, this.filePath);
-    await chmod(this.filePath, 0o600);
+  persist() {
+    const body = JSON.stringify({ version: 1, entries: Array.from(this.entries.values()) }, null, 2);
+    const saving = this.persistQueue.then(async () => {
+      await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 });
+      const temporary = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;
+      await writeFile(temporary, `${body}\n`, { mode: 0o600 });
+      await rename(temporary, this.filePath);
+      await chmod(this.filePath, 0o600);
+    });
+    this.persistQueue = saving.catch(() => {});
+    return saving;
   }
 
   queuePersist() {
-    this.persistQueue = this.persistQueue.then(() => this.persist());
-    return this.persistQueue;
+    return this.persist();
   }
 
   async flush() {

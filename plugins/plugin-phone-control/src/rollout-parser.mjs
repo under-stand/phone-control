@@ -18,19 +18,21 @@ export function createRolloutContext(filePath) {
     threadSource: null,
     agentRole: null,
     activeTool: null,
+    turnId: null,
   };
 }
 
 function baseEvent(record, context, kind, salt = "") {
   const payload = record.payload || {};
-  const messageMetadata = payload.internal_chat_message_metadata_passthrough || {};
   const at = isoTime(record.timestamp ?? payload.timestamp ?? Date.now());
   return {
     eventId: stableId(context.filePath, at, record.type, payload.type, payload.id, salt),
     source: "rollout",
     provider: "codex",
     sessionId: context.sessionId,
-    turnId: asString(payload.turn_id ?? payload.turnId ?? messageMetadata.turn_id ?? messageMetadata.turnId),
+    // Internal chat metadata belongs to the model request, which can differ
+    // from the execution turn used by task_started/task_complete and hooks.
+    turnId: asString(payload.turn_id ?? payload.turnId) || context.turnId || null,
     at,
     kind,
     cwd: context.cwd,
@@ -103,6 +105,7 @@ export function normalizeRolloutRecord(record, context) {
   const payload = record.payload && typeof record.payload === "object" ? record.payload : {};
 
   if (record.type === "session_meta") {
+    context.turnId = null;
     context.sessionId = asString(payload.id ?? payload.session_id) || context.sessionId;
     context.cwd = asString(payload.cwd) || context.cwd;
     context.surface = inferSurface(payload.source ?? payload.originator) || context.surface;
@@ -118,6 +121,7 @@ export function normalizeRolloutRecord(record, context) {
     return [baseEvent(record, context, "session_metadata", "metadata")];
   }
   if (record.type === "turn_context") {
+    context.turnId = asString(payload.turn_id ?? payload.turnId) || context.turnId;
     context.cwd = asString(payload.cwd) || context.cwd;
     context.model = asString(payload.model) || context.model;
     context.reasoningEffort = asString(
@@ -146,7 +150,9 @@ export function normalizeRolloutRecord(record, context) {
 
   if (record.type === "event_msg") {
     switch (payload.type) {
-      case "task_started": return [baseEvent(record, context, "turn_start")];
+      case "task_started":
+        context.turnId = asString(payload.turn_id ?? payload.turnId);
+        return [baseEvent(record, context, "turn_start")];
       case "task_complete": {
         const events = [];
         const finalText = clampMessageText(payload.last_agent_message ?? payload.message);

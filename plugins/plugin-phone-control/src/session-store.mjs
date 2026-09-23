@@ -1,3 +1,5 @@
+import { ensurePendingInteractions, syncPendingInteraction, replaceOrAddInteraction, removeInteraction } from "./session-interactions.mjs";
+import { isOtherTurnActivity } from "./session-turn-identity.mjs";
 import { EventEmitter } from "node:events";
 import { appendFile, chmod, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -197,6 +199,10 @@ function newSession(event) {
     statusReason: "Discovered from local Codex state",
     currentTool: null,
     pendingApproval: null,
+    // Keep every live interaction by request identity. `pendingApproval` is
+    // retained as the backwards-compatible derived primary item for clients
+    // that render one action at a time.
+    pendingInteractions: [],
     lastMessage: null,
     lastUserMessage: null,
     firstUserMessage: null,
@@ -242,6 +248,7 @@ function newSession(event) {
   };
 }
 
+
 function trimSessionEvents(session) {
   while (session.events.length > MAX_SESSION_EVENTS) {
     // Prefer dropping low-value activity rows. Keep tool_start rows from the
@@ -280,6 +287,7 @@ function eventLabel(event) {
 }
 
 function applyEvent(session, event) {
+  ensurePendingInteractions(session);
   if (String(event.source || "").startsWith("phone-control-smoke")) session.testEvidence = true;
   const eventAt = Date.parse(event.at);
   const sessionAt = Date.parse(session.updatedAt);
@@ -294,6 +302,11 @@ function applyEvent(session, event) {
     && session.lastCompletedTurnId === event.turnId
     && SAME_TURN_POST_COMPLETION_NOISE.has(event.kind),
   );
+  const activeTurnId = session.pendingApproval?.turnId || session.turnId || null;
+  const otherTurnActivity = isOtherTurnActivity(session, event);
+  const terminalForOtherTurn = TERMINAL_TASK_EVENT_KINDS.has(event.kind)
+    && ((event.turnId && activeTurnId && event.turnId !== activeTurnId)
+      || (!event.turnId && activeTurnId && Number.isFinite(eventAt) && Number.isFinite(sessionAt) && eventAt < sessionAt));
   // Metadata is replayed when an existing rollout is rediscovered. It enriches
   // classification, but must not make an old session look newly started (or
   // move its real last-activity time back to the rollout header timestamp).
@@ -305,7 +318,12 @@ function applyEvent(session, event) {
   session.model = event.model || session.model;
   session.reasoningEffort = event.reasoningEffort || session.reasoningEffort;
   session.serviceTier = event.serviceTier || session.serviceTier;
-  if (!staleState) session.turnId = event.turnId || session.turnId;
+  const pendingTurnMutationBlocked = session.pendingApproval?.canRespond
+    && session.pendingApproval.turnId
+    && event.turnId
+    && event.turnId !== session.pendingApproval.turnId
+    && !INTERACTION_STATE_EVENT_KINDS.has(event.kind);
+  if (!staleState && !terminalForOtherTurn && !pendingTurnMutationBlocked && !otherTurnActivity) session.turnId = event.turnId || session.turnId;
   session.transcriptPath = event.transcriptPath || session.transcriptPath;
   session.permissionMode = event.permissionMode || session.permissionMode;
   session.approvalPolicy = event.approvalPolicy || session.approvalPolicy;
@@ -351,7 +369,7 @@ function applyEvent(session, event) {
       }
     }
   }
-  if (staleState || finalizedSameTurn) return;
+  if (staleState || finalizedSameTurn || terminalForOtherTurn || otherTurnActivity) return;
 
   // Hooks, rollout replay, and the App Server can report parallel tool or
   // subagent activity while one approval or question is still awaiting the
@@ -378,7 +396,8 @@ function applyEvent(session, event) {
     case "subagent_stop":
       session.status = "working";
       session.statusReason = eventLabel(event);
-      session.pendingApproval = null;
+      if (!session.pendingApproval?.canRespond) session.pendingInteractions = [];
+      syncPendingInteraction(session);
       session.completedAt = null;
       break;
     case "phone_input_sent":
@@ -386,13 +405,15 @@ function applyEvent(session, event) {
       session.statusReason = event.action === "steer"
         ? "手机指令已追加到当前 turn"
         : "手机指令已送达，Codex 已开始新 turn";
-      session.pendingApproval = null;
+      if (!session.pendingApproval?.canRespond) session.pendingInteractions = [];
+      syncPendingInteraction(session);
       session.completedAt = null;
       break;
     case "phone_interrupt_sent":
       session.status = "working";
       session.statusReason = "手机已请求停止当前 turn";
-      session.pendingApproval = null;
+      if (!session.pendingApproval?.canRespond) session.pendingInteractions = [];
+      syncPendingInteraction(session);
       session.currentTool = null;
       session.completedAt = null;
       break;
@@ -400,7 +421,8 @@ function applyEvent(session, event) {
       session.status = "working";
       session.currentTool = event.tool || { name: "tool", summary: null };
       session.statusReason = eventLabel(event);
-      session.pendingApproval = null;
+      if (!session.pendingApproval?.canRespond) session.pendingInteractions = [];
+      syncPendingInteraction(session);
       break;
     case "tool_end":
       session.status = "working";
@@ -415,8 +437,9 @@ function applyEvent(session, event) {
       if (!event.approval?.id) {
         session.status = "working";
         session.statusReason = "Codex 正在处理本次操作权限";
-        session.pendingApproval = null;
-        session.control.canApprove = false;
+        // Passive observations do not own an interaction and must not clear
+        // a live approval belonging to another event.
+        syncPendingInteraction(session);
         break;
       }
       // Fall through for a challenge that Phone Control actually owns.
@@ -424,7 +447,7 @@ function applyEvent(session, event) {
       session.status = "waiting";
       session.statusReason = eventLabel(event);
       const isQuestion = event.kind === "question";
-      session.pendingApproval = {
+      replaceOrAddInteraction(session, {
         id: isQuestion ? event.interaction?.id || null : event.approval?.id || null,
         kind: isQuestion ? "question" : "permission",
         tool: event.tool || null,
@@ -437,9 +460,8 @@ function applyEvent(session, event) {
         itemId: event.interaction?.itemId || null,
         questions: event.interaction?.questions || null,
         delivery: event.interaction?.delivery || null,
-      };
-      session.control.canApprove = !isQuestion && Boolean(event.approval?.id);
-      session.control.canAnswer = isQuestion && Boolean(event.interaction?.canRespond);
+      });
+      syncPendingInteraction(session);
       session.control.canSend = false;
       session.control.canSteer = false;
       session.control.action = null;
@@ -455,40 +477,32 @@ function applyEvent(session, event) {
       break;
     }
     case "approval_resolved":
+      if (!removeInteraction(session, event)) break;
       session.status = "working";
       session.statusReason = event.decision === "allow" ? "手机已允许本次操作" : "手机已拒绝本次操作";
-      session.pendingApproval = null;
       session.currentTool = null;
-      session.control.canApprove = false;
       break;
     case "approval_expired":
-      session.status = "waiting";
-      session.statusReason = "手机审批已过期，请在电脑上的 Codex 中处理";
-      if (session.pendingApproval) {
-        session.pendingApproval.id = null;
-        session.pendingApproval.canRespond = false;
-      }
-      session.control.canApprove = false;
+      if (!removeInteraction(session, event, { unavailable: true })) break;
+      session.status = session.pendingApproval?.canRespond ? "waiting" : "unknown";
+      session.statusReason = event.reason || "手机审批通道已失效，请回到原 Codex 客户端处理";
       break;
     case "question_answered":
+      if (!removeInteraction(session, event)) break;
       session.status = "working";
       session.statusReason = "手机回答已送达，Codex 正在继续";
-      session.pendingApproval = null;
       session.currentTool = null;
-      session.control.canAnswer = false;
-      session.control.mode = session.control.live ? "connected" : "observe";
+      syncPendingInteraction(session);
+      session.control.mode = session.pendingApproval?.canRespond ? "answer" : session.control.live ? "connected" : "observe";
       session.control.reason = session.control.live
         ? "Live app-server thread is verified"
         : "Live app-server connection is unavailable";
       break;
     case "question_unavailable":
+      if (!removeInteraction(session, event, { unavailable: true })) break;
       session.status = "waiting";
       session.statusReason = event.reason || "手机回答通道已失效，请回到原 Codex 客户端处理";
-      if (session.pendingApproval?.kind === "question") {
-        session.pendingApproval.canRespond = false;
-        session.pendingApproval.delivery = event.delivery || "not_delivered";
-      }
-      session.control.canAnswer = false;
+      session.status = session.pendingApproval?.canRespond ? "waiting" : "unknown";
       break;
     case "assistant_message":
       if (session.status === "unknown") session.status = "working";
@@ -498,7 +512,8 @@ function applyEvent(session, event) {
       session.status = "idle";
       session.statusReason = eventLabel(event);
       session.currentTool = null;
-      session.pendingApproval = null;
+      session.pendingInteractions = [];
+      syncPendingInteraction(session);
       session.control.canAnswer = false;
       session.lastCompletedTurnId = event.turnId || session.turnId || null;
       session.lastCompletionEventId = event.eventId || null;
@@ -508,7 +523,8 @@ function applyEvent(session, event) {
       session.status = "completed";
       session.statusReason = eventLabel(event);
       session.currentTool = null;
-      session.pendingApproval = null;
+      session.pendingInteractions = [];
+      syncPendingInteraction(session);
       session.control.canAnswer = false;
       session.completedAt = event.at;
       break;
@@ -516,7 +532,8 @@ function applyEvent(session, event) {
       session.status = "aborted";
       session.statusReason = eventLabel(event);
       session.currentTool = null;
-      session.pendingApproval = null;
+      session.pendingInteractions = [];
+      syncPendingInteraction(session);
       session.control.canAnswer = false;
       session.lastCompletedTurnId = event.turnId || session.turnId || null;
       session.lastCompletionEventId = event.eventId || null;
@@ -526,14 +543,14 @@ function applyEvent(session, event) {
       session.status = "error";
       session.statusReason = eventLabel(event);
       session.currentTool = null;
-      session.pendingApproval = null;
+      session.pendingInteractions = [];
+      syncPendingInteraction(session);
       session.control.canAnswer = false;
       break;
     default:
       break;
   }
-  if (!session.pendingApproval) session.control.canApprove = false;
-  if (!session.pendingApproval) session.control.canAnswer = false;
+  syncPendingInteraction(session);
 }
 
 export class SessionStore extends EventEmitter {
@@ -678,6 +695,7 @@ export class SessionStore extends EventEmitter {
         : "之前的等待请求已过期；需要重新验证 Codex 现场状态";
       session.currentTool = null;
       session.pendingApproval = null;
+      session.pendingInteractions = [];
       session.control = {
         mode: "observe",
         canSteer: false,
@@ -912,6 +930,9 @@ export class SessionStore extends EventEmitter {
       ? Object.fromEntries(Object.entries({ ...session, events: selectedEvents }).filter(([key]) => key !== "taskResults"))
       : Object.fromEntries(Object.entries(session).filter(([key]) => key !== "events" && key !== "taskResults"));
     const copy = JSON.parse(JSON.stringify(source));
+    copy.pendingApprovals = Array.isArray(session.pendingInteractions)
+      ? session.pendingInteractions.filter((interaction) => interaction?.id)
+      : (copy.pendingApproval ? [copy.pendingApproval] : []);
     const updatedAtMs = Date.parse(copy.updatedAt);
     const ageMs = Math.max(0, Date.now() - updatedAtMs);
     const ended = ["idle", "completed", "error", "aborted"].includes(copy.status);
@@ -938,6 +959,7 @@ export class SessionStore extends EventEmitter {
     }
     delete copy.testEvidence;
     delete copy.taskResults;
+    delete copy.pendingInteractions;
     delete copy.transcriptPath;
     delete copy.firstUserMessage;
     delete copy.taskGoalMessage;

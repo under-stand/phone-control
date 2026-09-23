@@ -41,4 +41,28 @@ export const tests = [
       assert.equal(state.phase, "online");
     },
   },
+  {
+    name: "keeps a healthy SSE connection online after an HTTP refresh error",
+    run() {
+      let state = createConnectionState({ now: 0 });
+      state = reduceConnectionState(state, { type: "stream_snapshot" }, { now: 1_000 });
+      state = reduceConnectionState(state, { type: "http_sync_error", error: "temporary" }, { now: 1_100 });
+      assert.equal(state.phase, "online");
+      assert.equal(state.transport, "sse");
+      state = reduceConnectionState(state, { type: "stream_activity" }, { now: 1_200 });
+      assert.equal(state.phase, "online");
+    },
+  },
+  {
+    name: "requires a new snapshot after reconnect even when an earlier HTTP sync exists",
+    run() {
+      let state = reduceConnectionState(null, { type: "http_sync_ok" }, { now: 1_000 });
+      state = reduceConnectionState(state, { type: "stream_open" }, { now: 1_100 });
+      state = reduceConnectionState(state, { type: "stream_activity" }, { now: 1_200 });
+      assert.equal(state.phase, "connecting");
+      state = reduceConnectionState(state, { type: "stream_snapshot" }, { now: 1_300 });
+      state = reduceConnectionState(state, { type: "http_sync_error" }, { now: 26_000 });
+      assert.equal(state.phase, "online");
+    },
+  },
 ];

@@ -107,6 +107,9 @@ export class RolloutScanner extends EventEmitter {
       parseLines(await readRange(candidate.filePath, 0, headLength), context, () => {});
 
       const tailStart = Math.max(headLength, candidate.size - INITIAL_TAIL_BYTES);
+      // The skipped middle can contain new turn boundaries. Never attach the
+      // tail to an execution turn observed only in the file header.
+      if (candidate.size > headLength) context.turnId = null;
       const events = [];
       if (candidate.size <= headLength) {
         parseLines(await readRange(candidate.filePath, 0, candidate.size), context, (event) => events.push(event));
@@ -129,6 +132,7 @@ export class RolloutScanner extends EventEmitter {
     if (candidate.size - start > MAX_INCREMENTAL_BYTES) {
       start = candidate.size - MAX_INCREMENTAL_BYTES;
       known.remainder = "";
+      known.context.turnId = null;
       skipFirstPartial = true;
     }
     const chunk = await readRange(candidate.filePath, start, candidate.size - start);

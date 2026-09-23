@@ -47,6 +47,9 @@ function stateCopy(command, state, label, detail, extra = {}) {
 
 function projectCommand(session, command) {
   const rawStatus = command.status || "unknown";
+  if (rawStatus === "cli_queued") {
+    return stateCopy(command, "queued", "已交给原 CLI 排队", "原 CLI 将继续同一个会话；忙时等待后续处理，已关闭时需在电脑重新打开原会话");
+  }
   if (rawStatus === "queued") {
     return stateCopy(command, "queued", "已排队", "等待连接和会话条件满足后发送");
   }
@@ -71,20 +74,21 @@ function projectCommand(session, command) {
     return stateCopy(command, "failed", "发送失败", command.lastError || "Codex 没有接受这条指令");
   }
   if (rawStatus === "canceled") {
+    if (command.deliveryUnknown) return stateCopy(command, "canceled", "已停止重试", "此前是否送达尚不确定，请先查看会话；取消队列不会中断已开始的执行");
     return stateCopy(command, "canceled", "已取消", "这条排队指令不会再发送");
   }
   if (rawStatus === "expired") {
     return stateCopy(command, "expired", "已过期", "指令在送达前已过期");
   }
   if (rawStatus === "delivered") {
-    const completed = Boolean(command.phoneOwnershipEndedAt)
-      || (command.turnId && command.turnId === session.lastCompletedTurnId)
-      || (isSameTurn(session, command) && ["idle", "completed", "error", "aborted"].includes(session.status));
+    const completed = Boolean(command.completedAt || command.outcome || (command.turnId && command.turnId === session.lastCompletedTurnId));
     if (completed) {
-      const failed = session.status === "error";
-      return stateCopy(command, failed ? "failed" : "completed", failed ? "执行失败" : session.status === "aborted" ? "执行已停止" : "本轮完成", failed
-        ? session.statusReason || "Codex 执行这条指令时遇到错误"
-        : session.status === "aborted" ? "Codex 已停止这次执行" : "Codex 已完成这条手机指令", { outcome: session.status });
+      const outcome = command.outcome || (command.turnId === session.lastCompletedTurnId ? "completed" : null);
+      const failed = outcome === "error";
+      const aborted = outcome === "aborted";
+      return stateCopy(command, failed ? "failed" : "completed", failed ? "执行失败" : aborted ? "执行已停止" : "本轮完成", failed
+        ? command.lastError || "Codex 执行这条指令时遇到错误"
+        : aborted ? "Codex 已停止这次执行" : "Codex 已完成这条手机指令", { outcome: outcome || "completed" });
     }
     if (session.pendingApproval && (!command.turnId || isSameTurn(session, command))) {
       const question = session.pendingApproval.kind === "question";
@@ -107,6 +111,19 @@ export function deriveCommandState(session, { queuedCommands = [], liveCommands 
   );
   if (!commands.length) return null;
   return projectCommand(session || {}, commands[0]);
+}
+
+export function deriveCommandProjection(session, { queuedCommands = [], liveCommands = [], now = Date.now() } = {}) {
+  const states = mergeCommands(queuedCommands, liveCommands).map((command) => projectCommand(session, command));
+  const activeCommands = states.filter(isCommandInFlight);
+  const attentionCommands = states.filter((command) => command.state === "needs_review"
+    || command.state === "waiting_user"
+    || (command.state === "failed" && now - Date.parse(command.changedAt) <= 7 * 86_400_000));
+  const priority = { needs_review: 3, failed: 2, waiting_user: 1 };
+  attentionCommands.sort((left, right) => priority[right.state] - priority[left.state]);
+  const latestCommand = states[0] || null;
+  return { latestCommand, activeCommands, attentionCommands,
+    commandState: attentionCommands[0] || activeCommands[0] || latestCommand };
 }
 
 export function isCommandInFlight(commandState) {
